@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=SCos Window Manager
+GenericName=Desktop Environment
+Comment=The SCos desktop (from the SCos operating system) in a window
+Exec=scoswm
+Terminal=false
+Categories=System;Utility;
+Keywords=scos;window manager;desktop;retro;
+StartupNotify=false
