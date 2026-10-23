@@ -1,0 +1,1 @@
+# scoswm-arch
