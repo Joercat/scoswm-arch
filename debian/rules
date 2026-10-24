@@ -1,0 +1,14 @@
+#!/usr/bin/make -f
+# Debian package build for scoswm. The upstream Makefile is plain
+# make + libX11/zlib, so debhelper's makefile buildsystem drives it
+# directly; only the install prefix needs pinning to /usr (the
+# buildsystem would otherwise pass a lowercase prefix= that this
+# Makefile does not use).
+
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+%:
+	dh $@
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/scoswm PREFIX=/usr

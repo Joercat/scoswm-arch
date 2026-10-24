@@ -43,9 +43,26 @@ the normal config file.
   toolkit supports.
 
 The only runtime dependencies are `libX11` and zlib (the latter is
-used to decode standard PNG app icons).
+used to decode standard PNG app icons) — on Debian those are the
+`libx11-6`/`zlib1g` packages, pulled in automatically by the `.deb`.
 
 ## Install
+
+Debian 12/13 (and derivatives) — build a quick test package:
+
+```sh
+sudo apt install build-essential libx11-dev zlib1g-dev
+./packaging/build-deb.sh
+sudo apt install ./scoswm_*.deb
+```
+
+or build the proper Debian source package in `debian/`:
+
+```sh
+sudo apt install debhelper libx11-dev zlib1g-dev
+dpkg-buildpackage -us -uc -b
+sudo apt install ../scoswm_*.deb
+```
 
 Arch (this repo ships a `PKGBUILD`):
 
@@ -58,6 +75,19 @@ Any distro:
 ```sh
 make
 sudo make install          # /usr/bin/scoswm, session files under /usr/share
+```
+
+### Selecting SCosWM in SDDM
+
+Installation puts `scoswm.desktop` in `/usr/share/xsessions/`, which is
+where SDDM looks for X11 sessions. No SDDM configuration is needed:
+log out, click the session menu at the SDDM greeter, choose **SCosWM**,
+and log in. (SDDM starts its X server via Xorg, so make sure
+`xserver-xorg-core` is installed — the Debian package recommends it.)
+Verify the session is registered with:
+
+```sh
+grep -H '^Name=\|^Exec=\|^TryExec=' /usr/share/xsessions/scoswm.desktop
 ```
 
 Then pick **SCosWM** in your display manager, or from a TTY:
@@ -118,6 +148,9 @@ windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 
 There are deliberately **no multiple workspaces**: one workspace, no
 pager, no workspace daemon and no extra background process.
+
+On Debian the default terminal honours the `x-terminal-emulator`
+alternative (`sudo update-alternatives --config x-terminal-emulator`).
 
 `scoswm --theme blue-sky` overrides the theme for one run;
 `scoswm --config FILE` loads a specific config. `SCOSWM_DEBUG=1`

@@ -49,7 +49,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.4.0"
+#define VERSION "0.4.1"
 #endif
 
 #define TITLE_H 26
@@ -221,8 +221,8 @@ static const char *detect_terminal(void)
     static char found[128];
     if (cfg.terminal[0]) return cfg.terminal;
     static const char *const list[] = {
-        "alacritty", "kitty", "st", "xfce4-terminal", "gnome-terminal",
-        "konsole", "xterm", NULL
+        "alacritty", "kitty", "st", "x-terminal-emulator", "xfce4-terminal",
+        "gnome-terminal", "konsole", "mate-terminal", "xterm", NULL
     };
     for (int i = 0; list[i]; i++)
         if (cmd_exists(list[i])) { snprintf(found, sizeof(found), "%s", list[i]); return found; }
@@ -231,7 +231,7 @@ static const char *detect_terminal(void)
 
 static const char *detect_files_exec(void)
 {
-    static const char *const list[] = { "thunar", "pcmanfm", "nautilus", "dolphin", "nemo", NULL };
+    static const char *const list[] = { "thunar", "pcmanfm", "pcmanfm-qt", "nautilus", "dolphin", "nemo", "caja", NULL };
     for (int i = 0; list[i]; i++)
         if (cmd_exists(list[i])) return list[i];
     return NULL;

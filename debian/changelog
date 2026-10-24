@@ -1,0 +1,22 @@
+scoswm (0.4.1) unstable; urgency=medium
+
+  * Add Debian packaging (debian/) and a quick packaging/build-deb.sh
+    so the window manager builds and installs natively on Debian.
+  * Harden the SDDM/X11 session entry: TryExec now names the
+    scoswm-session entry point, so SDDM only lists SCosWM when the
+    session launcher is actually installed and executable.
+  * Detect Debian's x-terminal-emulator alternative (and pcmanfm-qt /
+    caja / mate-terminal) when choosing the default terminal and file
+    manager.
+  * Session launcher exports sensible XDG session variables for
+    startx/xinit use; under SDDM these are already provided.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 -0400
+
+scoswm (0.4.0) unstable; urgency=medium
+
+  * Real freedesktop icons for desktop/taskbar/launcher, launcher
+    right-click pinning of installed apps to the Home screen, and
+    taskbar layout fixes.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 -0400

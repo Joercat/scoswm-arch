@@ -4,7 +4,7 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.4.0"'
+CPPFLAGS += -DVERSION='"0.4.1"'
 LDLIBS   = -lX11 -lz
 PREFIX  ?= /usr
 DESTDIR ?=
@@ -21,6 +21,7 @@ scoswm: $(SRC) src/util.h
 # onto the screen to be screenshotted.
 check: scoswm test_util
 	./test_util
+	./tests/check_sddm.sh
 	./tests/run_integration.sh ./scoswm
 
 test_util: tests/test_util.c src/util.c src/util.h
