@@ -24,10 +24,12 @@ files =
 # X core font for decorations.
 # font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
 
-# Taskbar pins + desktop icons. The retained SCos core apps are
-# terminal, files, sysmon and settings. You may also use .desktop ids
-# or app names from the standard applications directories, or a bare
-# command from your own config.
+# Taskbar pins + desktop icons ("Home" apps). The retained SCos core
+# apps are terminal, files, sysmon and settings. You may also use
+# .desktop ids or app names from the standard applications
+# directories, or a bare command from your own config. The easiest way
+# to edit this is right-clicking an app in the launcher to pin/unpin
+# it; pinned apps show their real Icon= image.
 pins = terminal, files, sysmon, settings
 
 # Taskbar height (SCos used 40).

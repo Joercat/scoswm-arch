@@ -49,7 +49,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.3.0"
+#define VERSION "0.4.0"
 #endif
 
 #define TITLE_H 26
@@ -88,7 +88,7 @@ enum { A_NET_WM_NAME, A_UTF8_STRING, A_WM_DELETE_WINDOW, A_WM_TAKE_FOCUS,
        A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DOCK,
        A_NET_WM_WINDOW_TYPE_DESKTOP, A_NET_WM_WINDOW_TYPE_NOTIFICATION,
        A_NET_WM_WINDOW_TYPE_DIALOG, A_NET_WM_STRUT_PARTIAL,
-       A_NET_WM_PID, A_COUNT };
+       A_NET_WM_ICON, A_NET_WM_PID, A_COUNT };
 static Atom atoms[A_COUNT];
 static const char *const atom_names[A_COUNT] = {
     "_NET_WM_NAME", "UTF8_STRING", "WM_DELETE_WINDOW", "WM_TAKE_FOCUS",
@@ -100,11 +100,21 @@ static const char *const atom_names[A_COUNT] = {
     "_NET_WM_STATE_FULLSCREEN", "_NET_WM_STATE_HIDDEN",
     "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DOCK",
     "_NET_WM_WINDOW_TYPE_DESKTOP", "_NET_WM_WINDOW_TYPE_NOTIFICATION",
-    "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_WM_STRUT_PARTIAL", "_NET_WM_PID",
+    "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_WM_STRUT_PARTIAL",
+    "_NET_WM_ICON", "_NET_WM_PID",
 };
+
+struct xicon {
+    char key[768];
+    int size, w, h, failed, owned;
+    Pixmap pix, mask;
+    struct xicon *next;
+};
+static struct xicon *xicon_cache;
 
 struct client {
     Window win, frame;
+    struct xicon *icon;
     int x, y, w, h;                /* frame position, client size */
     int sx, sy, sw, sh;            /* saved geometry for max/fullscreen */
     int minimized, maximized, fullscreen;
@@ -123,7 +133,7 @@ static struct desktop_app apps[512];
 static int napps;
 
 enum core_action { CORE_NONE, CORE_TERMINAL, CORE_FILES, CORE_SYSMON, CORE_SETTINGS };
-struct pin { char label[64]; char glyph[4]; char command[512]; char match[96]; int action; };
+struct pin { char label[64]; char glyph[4]; char icon[160]; char command[512]; char match[96]; int action; };
 static struct pin pins[32];
 static int npins;
 
@@ -380,6 +390,12 @@ static void send_proto(struct client *c, Atom a)
 /* forward declarations for the UI half */
 static void draw_frame(struct client *c);
 static void draw_bar(void);
+static struct xicon *xicon_get(const char *spec, int size);
+static void draw_xicon(Window dst, struct xicon *xi, int x, int y);
+static struct xicon *client_load_icon(struct client *c);
+static void xicon_destroy_owned(struct xicon *xi);
+static void save_settings(const char *what);
+static void redraw_everything(void);
 static void update_ewmh_client_list(void);
 static void launcher_toggle(int open);
 static void wm_notify_no_windows(void);
@@ -515,6 +531,7 @@ static void remove_client(struct client *c, int reparent)
         XUngrabServer(dpy);
     }
     XDestroyWindow(dpy, c->frame);
+    xicon_destroy_owned(c->icon);
     memmove(&clients[idx], &clients[idx + 1], (nclients - idx - 1) * sizeof(*clients));
     nclients--;
     if (active_client == c) active_client = NULL;
@@ -586,6 +603,7 @@ static void manage(Window win)
     c->w = at.width > 0 ? at.width : 400;
     c->h = at.height > 0 ? at.height : 300;
     read_title(c); read_hints(c); read_class(c);
+    c->icon = client_load_icon(c);
     client_apply_hints(c, &c->w, &c->h);
     c->x = at.x - 1; c->y = at.y - TOP_H;
     int wx, wy, ww, wh; work_area(&wx, &wy, &ww, &wh);
@@ -685,24 +703,73 @@ static void update_ewmh_client_list(void)
  * the four SCos core apps and the user's pins. Typing a search term is
  * the deliberate escape hatch that also searches installed .desktop
  * applications, so hundreds of utilities do not clutter daily use. */
-static int launch_open, launch_offset, launch_sel;
+static int launch_open, launch_offset, launch_sel, launch_pin_mode;
 static char launch_q[64];
 
-struct launch_item { char name[128]; char glyph[4]; char command[1024]; int action; };
+struct launch_item { char name[128]; char glyph[4]; char icon[160]; char app_id[96]; char command[1024]; int action; int app_idx; };
 static struct launch_item launch_items[1056];
 static int launch_nitems;
 
-static const struct { const char *name, *glyph, *keywords; int action; } core_apps[] = {
-    { "Terminal", "Tr", "terminal shell console command", CORE_TERMINAL },
-    { "Files",    "Fi", "files file manager home documents downloads", CORE_FILES },
-    { "SysMon",   "Sy", "sysmon system monitor cpu memory gpu processes", CORE_SYSMON },
-    { "Settings", "Se", "settings theme configuration preferences", CORE_SETTINGS },
+static const struct { const char *name, *glyph, *icon, *keywords; int action; } core_apps[] = {
+    { "Terminal", "Tr", "utilities-terminal", "terminal shell console command", CORE_TERMINAL },
+    { "Files",    "Fi", "system-file-manager", "files file manager home documents downloads", CORE_FILES },
+    { "SysMon",   "Sy", "utilities-system-monitor", "sysmon system monitor cpu memory gpu processes", CORE_SYSMON },
+    { "Settings", "Se", "preferences-system", "settings theme configuration preferences", CORE_SETTINGS },
 };
 
 static void run_core_action(int action);
 static void launch_cmd_for(const struct desktop_app *a, char *out, int cap);
+static void build_pins(void);
 
-static void launch_add(const char *name, const char *glyph, const char *command, int action)
+/* Desktop/taskbar pins are deliberately just the existing "pins" list:
+ * pinning an installed app adds its .desktop id there, which makes it a
+ * first-class desktop icon (with that app's real icon) and taskbar pin,
+ * and persists across restarts in the normal config file. */
+static int app_is_pinned(int app_idx)
+{
+    if (app_idx < 0 || app_idx >= napps) return 0;
+    for (int i = 0; i < npins; i++)
+        if (pins[i].action == CORE_NONE && !strcasecmp(pins[i].match, apps[app_idx].id)) return 1;
+    return 0;
+}
+
+static void pins_sync_config(void)
+{
+    cfg.pins[0] = 0;
+    for (int i = 0; i < npins; i++) {
+        const char *tok = pins[i].action == CORE_TERMINAL ? "terminal" :
+                          pins[i].action == CORE_FILES ? "files" :
+                          pins[i].action == CORE_SYSMON ? "sysmon" :
+                          pins[i].action == CORE_SETTINGS ? "settings" :
+                          pins[i].match[0] ? pins[i].match : pins[i].command;
+        if (i) strncat(cfg.pins, ",", sizeof(cfg.pins) - strlen(cfg.pins) - 1);
+        strncat(cfg.pins, tok, sizeof(cfg.pins) - strlen(cfg.pins) - 1);
+    }
+}
+
+static void toggle_app_pin(int app_idx)
+{
+    if (app_idx < 0 || app_idx >= napps) return;
+    if (app_is_pinned(app_idx)) {
+        for (int i = 0; i < npins; i++) {
+            if (pins[i].action == CORE_NONE && !strcasecmp(pins[i].match, apps[app_idx].id)) {
+                memmove(&pins[i], &pins[i + 1], (npins - i - 1) * sizeof(pins[0]));
+                npins--;
+                break;
+            }
+        }
+        pins_sync_config();
+    } else {
+        if (cfg.pins[0]) strncat(cfg.pins, ",", sizeof(cfg.pins) - strlen(cfg.pins) - 1);
+        strncat(cfg.pins, apps[app_idx].id, sizeof(cfg.pins) - strlen(cfg.pins) - 1);
+    }
+    build_pins();
+    desk_sel_mask = 0;
+    save_settings("Desktop pins");
+    redraw_everything();
+}
+
+static void launch_add(const char *name, const char *glyph, const char *icon, const char *command, int action, int app_idx)
 {
     if (!name || !*name || launch_nitems >= (int)(sizeof(launch_items) / sizeof(launch_items[0]))) return;
     for (int i = 0; i < launch_nitems; i++)
@@ -712,7 +779,10 @@ static void launch_add(const char *name, const char *glyph, const char *command,
     snprintf(it->name, sizeof(it->name), "%s", name);
     snprintf(it->glyph, sizeof(it->glyph), "%s", glyph && *glyph ? glyph : "A");
     snprintf(it->command, sizeof(it->command), "%s", command ? command : "");
+    snprintf(it->icon, sizeof(it->icon), "%s", icon ? icon : "");
+    if (app_idx >= 0 && app_idx < napps) snprintf(it->app_id, sizeof(it->app_id), "%s", apps[app_idx].id);
     it->action = action;
+    it->app_idx = app_idx;
 }
 
 static int launch_rebuild(void)
@@ -721,13 +791,16 @@ static int launch_rebuild(void)
     int searching = launch_q[0] != 0;
     for (unsigned int i = 0; i < sizeof(core_apps) / sizeof(core_apps[0]); i++)
         if (ci_contains(core_apps[i].name, launch_q) || ci_contains(core_apps[i].keywords, launch_q))
-            launch_add(core_apps[i].name, core_apps[i].glyph, "", core_apps[i].action);
+            launch_add(core_apps[i].name, core_apps[i].glyph, core_apps[i].icon, "", core_apps[i].action, -1);
 
     /* Pins are part of the user's normal desktop, so keep them visible. */
     for (int i = 0; i < npins; i++) {
         if (pins[i].action != CORE_NONE) continue;
-        if (ci_contains(pins[i].label, launch_q))
-            launch_add(pins[i].label, pins[i].glyph, pins[i].command, CORE_NONE);
+        if (ci_contains(pins[i].label, launch_q)) {
+            int app_idx = -1;
+            for (int j = 0; j < napps; j++) if (!strcasecmp(apps[j].id, pins[i].match)) app_idx = j;
+            launch_add(pins[i].label, pins[i].glyph, pins[i].icon, pins[i].command, CORE_NONE, app_idx);
+        }
     }
 
     /* Installed applications appear only after the user starts typing. */
@@ -737,7 +810,7 @@ static int launch_rebuild(void)
             char cmd[1024];
             launch_cmd_for(&apps[i], cmd, sizeof(cmd));
             char glyph[4] = { apps[i].name[0] ? apps[i].name[0] : 'A', 0 };
-            launch_add(apps[i].name, glyph, cmd, CORE_NONE);
+            launch_add(apps[i].name, glyph, apps[i].icon[0] ? apps[i].icon : apps[i].id, cmd, CORE_NONE, i);
         }
     }
     if (launch_sel >= launch_nitems) launch_sel = launch_nitems > 0 ? launch_nitems - 1 : 0;
@@ -863,6 +936,181 @@ static void draw_frame(struct client *c)
         XFillRectangle(dpy, f, gc, fw - 12 + i * 3, fh - 12 + i * 3, 2, 2);
 }
 
+
+/* ------------------------------------------------------------ X11 icons */
+/* Icons are decoded once, cached as a colour pixmap plus a 1-bit alpha
+ * mask, and copied by the X server thereafter. Desktop icons are at
+ * most 24 px, taskbar pins 20 px and running-window icons 16 px: the
+ * normal freedesktop sizes, never enlarged. */
+static int xicon_fill(struct xicon *xi, struct rgba_image *img)
+{
+    if (!img || !img->pixels) return 0;
+    if (!rgba_image_scale_fit(img, xi->size, xi->size)) return 0;
+    xi->w = img->w; xi->h = img->h;
+    xi->pix = XCreatePixmap(dpy, root, xi->w, xi->h, DefaultDepth(dpy, scr_no));
+    xi->mask = XCreatePixmap(dpy, root, xi->w, xi->h, 1);
+    if (!xi->pix || !xi->mask) return 0;
+
+    XImage *im = XCreateImage(dpy, DefaultVisual(dpy, scr_no), DefaultDepth(dpy, scr_no),
+                              ZPixmap, 0, NULL, xi->w, xi->h, 32, 0);
+    if (!im) return 0;
+    im->data = malloc((size_t)im->bytes_per_line * xi->h);
+    if (!im->data) { XFree(im); return 0; }
+    XInitImage(im);
+    for (int y = 0; y < xi->h; y++)
+        for (int x = 0; x < xi->w; x++) {
+            unsigned char *px = img->pixels + ((size_t)y * xi->w + x) * 4;
+            XPutPixel(im, x, y, ((unsigned long)px[0] << 16) |
+                                ((unsigned long)px[1] << 8) | px[2]);
+        }
+    XPutImage(dpy, xi->pix, gc, im, 0, 0, 0, 0, xi->w, xi->h);
+    XDestroyImage(im);
+
+    GC mgc = XCreateGC(dpy, xi->mask, 0, NULL);
+    XSetForeground(dpy, mgc, 0);
+    XFillRectangle(dpy, xi->mask, mgc, 0, 0, xi->w, xi->h);
+    XSetForeground(dpy, mgc, 1);
+    for (int y = 0; y < xi->h; y++)
+        for (int x = 0; x < xi->w; x++) {
+            unsigned char *px = img->pixels + ((size_t)y * xi->w + x) * 4;
+            if (px[3] >= 128) XFillRectangle(dpy, xi->mask, mgc, x, y, 1, 1);
+        }
+    XFreeGC(dpy, mgc);
+    return 1;
+}
+
+static struct xicon *xicon_get(const char *spec, int size)
+{
+    if (!spec || !*spec || size <= 0) return NULL;
+    char key[768];
+    snprintf(key, sizeof(key), "%d:%s", size, spec);
+    for (struct xicon *xi = xicon_cache; xi; xi = xi->next)
+        if (!strcmp(xi->key, key)) return xi;
+
+    struct xicon *xi = calloc(1, sizeof(*xi));
+    if (!xi) return NULL;
+    snprintf(xi->key, sizeof(xi->key), "%s", key);
+    xi->size = size;
+    char path[1024];
+    struct rgba_image img;
+    if (icon_resolve(spec, size, path, sizeof(path)) && rgba_image_load(path, &img)) {
+        xi->failed = !xicon_fill(xi, &img);
+        rgba_image_free(&img);
+    } else xi->failed = 1;
+    xi->next = xicon_cache;
+    xicon_cache = xi;
+    return xi;
+}
+
+static void draw_xicon(Window dst, struct xicon *xi, int x, int y)
+{
+    if (!xi || xi->failed || !xi->pix) return;
+    if (xi->mask) {
+        XSetClipMask(dpy, gc, xi->mask);
+        XSetClipOrigin(dpy, gc, x, y);
+    }
+    XCopyArea(dpy, xi->pix, dst, gc, 0, 0, xi->w, xi->h, x, y);
+    if (xi->mask) XSetClipMask(dpy, gc, None);
+    return;
+}
+
+static int xicon_drawn(struct xicon *xi) { return xi && !xi->failed && xi->pix != None; }
+
+static void xicon_destroy_owned(struct xicon *xi)
+{
+    if (!xi || !xi->owned) return;
+    if (xi->pix) XFreePixmap(dpy, xi->pix);
+    if (xi->mask) XFreePixmap(dpy, xi->mask);
+    free(xi);
+}
+
+static void app_exec_basename(const struct desktop_app *a, char *out, int cap)
+{
+    char cmd[512], first[512];
+    exec_strip_field_codes(a->exec, cmd, sizeof(cmd));
+    snprintf(first, sizeof(first), "%s", cmd);
+    char *sp = strchr(first, ' ');
+    if (sp) *sp = 0;
+    const char *base = strrchr(first, '/');
+    snprintf(out, cap, "%s", base ? base + 1 : first);
+    for (char *p = out; *p; p++) *p = (char)tolower((unsigned char)*p);
+}
+
+static int client_desktop_app(struct client *c)
+{
+    int best = -1, best_score = 0;
+    char classbuf[160];
+    snprintf(classbuf, sizeof(classbuf), "%s", c->wclass);
+    for (char *tok = strtok(classbuf, " \t-._"); tok; tok = strtok(NULL, " \t-._")) {
+        if (strlen(tok) < 2) continue;
+        for (int i = 0; i < napps; i++) {
+            char execbase[128];
+            app_exec_basename(&apps[i], execbase, sizeof(execbase));
+            int score = 0;
+            if (!strcasecmp(tok, apps[i].id)) score = 100;
+            else if (!strcasecmp(tok, execbase)) score = 90;
+            else if (apps[i].icon[0] && !strcasecmp(tok, apps[i].icon)) score = 80;
+            else if (strlen(apps[i].id) > 2 && strstr(c->wclass, apps[i].id)) score = 50;
+            if (score > best_score) { best_score = score; best = i; }
+        }
+    }
+    return best;
+}
+
+static struct xicon *client_net_icon(struct client *c)
+{
+    Atom type; int fmt; unsigned long n = 0, after = 0; unsigned char *data = NULL;
+    if (XGetWindowProperty(dpy, c->win, atoms[A_NET_WM_ICON], 0, 1 << 18, False,
+                           XA_CARDINAL, &type, &fmt, &n, &after, &data) != Success || !data)
+        return NULL;
+    unsigned long *cards = (unsigned long *)data;
+    unsigned long best_off = 0, best_w = 0, best_h = 0, best_area = 0;
+    int have = 0;
+    for (unsigned long off = 0; off + 2 <= n; ) {
+        unsigned long iw = cards[off], ih = cards[off + 1];
+        if (iw == 0 || ih == 0 || iw > 512 || ih > 512) break;
+        unsigned long count = iw * ih;
+        if (off + 2 + count > n) break;
+        unsigned long area = count;
+        if (!have || (iw >= 16 && ih >= 16 && (best_w < 16 || area < best_area)) ||
+            (best_w < 16 && area > best_area)) {
+            best_off = off; best_w = iw; best_h = ih; best_area = area; have = 1;
+        }
+        off += 2 + count;
+    }
+    if (!have) { XFree(data); return NULL; }
+    struct rgba_image img;
+    img.w = (int)best_w; img.h = (int)best_h;
+    img.pixels = malloc((size_t)img.w * img.h * 4);
+    if (!img.pixels) { XFree(data); return NULL; }
+    for (unsigned long i = 0; i < best_w * best_h; i++) {
+        unsigned long v = cards[best_off + 2 + i];
+        img.pixels[i * 4 + 0] = (unsigned char)(v >> 16);
+        img.pixels[i * 4 + 1] = (unsigned char)(v >> 8);
+        img.pixels[i * 4 + 2] = (unsigned char)v;
+        img.pixels[i * 4 + 3] = (unsigned char)(v >> 24);
+    }
+    XFree(data);
+    struct xicon *xi = calloc(1, sizeof(*xi));
+    if (!xi) { rgba_image_free(&img); return NULL; }
+    xi->size = 16; xi->owned = 1;
+    snprintf(xi->key, sizeof(xi->key), "client:0x%lx", c->win);
+    if (!xicon_fill(xi, &img)) { free(xi); xi = NULL; }
+    rgba_image_free(&img);
+    return xi;
+}
+
+static struct xicon *client_load_icon(struct client *c)
+{
+    int app = client_desktop_app(c);
+    if (app >= 0) {
+        const char *spec = apps[app].icon[0] ? apps[app].icon : apps[app].id;
+        struct xicon *xi = xicon_get(spec, 16);
+        if (xicon_drawn(xi)) return xi;
+    }
+    return client_net_icon(c);
+}
+
 /* ---------------------------------------------------------------- desktop */
 static void icon_rect(int i, int *x, int *y)
 {
@@ -892,11 +1140,17 @@ static void draw_desktop(void)
             fill(root, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 30)));
             rect(root, x, y, 80, 88, PX.main);
         }
-        /* generic SCos-ish 24x24 glyph: a framed box with the initial */
+        /* proper freedesktop image at the normal 24x24 SCos size;
+         * the framed letter glyph remains only as a fallback */
         int gx = x + 28, gy = y + 8;
-        rect(root, gx, gy, 24, 24, PX.main);
-        int gw = text_w(pins[i].glyph);
-        text_out(root, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
+        struct xicon *xi = xicon_get(pins[i].icon, 24);
+        if (xicon_drawn(xi)) {
+            draw_xicon(root, xi, gx + (24 - xi->w) / 2, gy + (24 - xi->h) / 2);
+        } else {
+            rect(root, gx, gy, 24, 24, PX.main);
+            int gw = text_w(pins[i].glyph);
+            text_out(root, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
+        }
         clipped_text(root, x + 4, y + 40 + font->ascent, pins[i].label, 72, PX.text);
     }
 }
@@ -906,45 +1160,46 @@ struct bar_item { int kind; int idx; int x, w; };   /* kind 0=client 1=pin */
 static struct bar_item bar_items[96];
 static int bar_n;
 
+static int bar_power_x(void)
+{
+    /* power button + clock strip reserved before any app buttons */
+    return screen_w - 100 - 34 - 16;
+}
+
 static void bar_layout(void)
 {
     bar_n = 0;
     int x = 168;
-    int avail = screen_w - x - 34 - 16 - 100;        /* power + clock+padding */
-    if (avail < 100) avail = 100;
-    /* pinned squares first (34 px, SCos taskbar pins) */
-    int squares = 0;
-    for (int i = 0; i < npins; i++) {
-        int running = 0;
-        for (int k = 0; k < nclients; k++)
-            if (pins[i].match[0] && strstr(clients[k]->wclass, pins[i].match)) running = 1;
-        if (!running) squares++;
-    }
-    int sq_w = squares * 40;
-    if (sq_w > avail / 3) sq_w = avail / 3;
+    int end = bar_power_x() - 8;
+    if (end < x) end = x;
+
+    /* pinned squares first at the fixed normal 34 px taskbar size */
     for (int i = 0; i < npins && bar_n < 96; i++) {
         int running = 0;
         for (int k = 0; k < nclients; k++)
             if (pins[i].match[0] && strstr(clients[k]->wclass, pins[i].match)) running = 1;
-        if (running) continue;
-        if (x + 40 > 168 + sq_w + 200 && squares > 4) break;
+        if (running || x + 34 > end) continue;
         bar_items[bar_n].kind = 1; bar_items[bar_n].idx = i;
         bar_items[bar_n].x = x; bar_items[bar_n].w = 34; bar_n++;
         x += 40;
     }
-    /* running windows share what is left */
+
+    /* running windows share only the space that is actually left;
+     * they may shrink, but never draw over the power button/clock */
     int nrun = 0;
     for (int i = 0; i < nclients; i++) if (!clients[i]->skip_taskbar) nrun++;
-    if (nrun) {
-        int rest = screen_w - x - 34 - 16 - 100;
-        int bw = rest / nrun;
+    if (nrun && end > x) {
+        int bw = (end - x) / nrun - 6;
         if (bw > 170) bw = 170;
-        if (bw < 46) bw = 46;
+        if (bw < 28) bw = 28;
         for (int i = 0; i < nclients && bar_n < 96; i++) {
             if (clients[i]->skip_taskbar) continue;
+            if (x + 28 > end) break;
+            int w = bw;
+            if (x + w > end) w = end - x;
             bar_items[bar_n].kind = 0; bar_items[bar_n].idx = i;
-            bar_items[bar_n].x = x; bar_items[bar_n].w = bw; bar_n++;
-            x += bw + 6;
+            bar_items[bar_n].x = x; bar_items[bar_n].w = w; bar_n++;
+            x += w + 6;
         }
     }
 }
@@ -974,22 +1229,33 @@ static void draw_bar(void)
             struct pin *p = &pins[it->idx];
             fill(bar_win, it->x, by, 34, bh, PX.taskbar_bg);
             rect(bar_win, it->x, by, 34, bh, PX.main);
-            int gw = text_w(p->glyph);
-            text_out(bar_win, it->x + (34 - gw) / 2, by + 8 + font->ascent, p->glyph, PX.text);
+            struct xicon *xi = xicon_get(p->icon, bh < 20 ? bh : 20);
+            if (xicon_drawn(xi))
+                draw_xicon(bar_win, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
+            else {
+                int gw = text_w(p->glyph);
+                text_out(bar_win, it->x + (34 - gw) / 2, by + 8 + font->ascent, p->glyph, PX.text);
+            }
         } else {
             struct client *c = clients[it->idx];
             int foc = active_client == c;
             fill(bar_win, it->x, by, it->w, bh,
                  foc ? PX.bar_hi : PX.taskbar_bg);
             rect(bar_win, it->x, by, it->w, bh, PX.main);
-            clipped_text(bar_win, it->x + 6, by + 6 + font->ascent, c->title,
-                         it->w - 12, c->minimized ? PX.title_off : PX.text);
-            if (c->minimized)             /* SCos showed put-away state */
-                text_out(bar_win, it->x + 6, by + 6 + font->ascent, "[-] ", PX.main);
+            int tx = it->x + 6;
+            if (xicon_drawn(c->icon)) {
+                draw_xicon(bar_win, c->icon, tx, by + (bh - c->icon->h) / 2);
+                tx += c->icon->w + 4;
+            }
+            char title[288];
+            if (c->minimized) snprintf(title, sizeof(title), "[-] %s", c->title);
+            else snprintf(title, sizeof(title), "%s", c->title);
+            clipped_text(bar_win, tx, by + 6 + font->ascent, title,
+                         it->x + it->w - tx - 4, c->minimized ? PX.title_off : PX.text);
         }
     }
     /* power button */
-    int pw = 34, px = screen_w - 100 - pw - 16;
+    int pw = 34, px = bar_power_x();
     fill(bar_win, px, by, pw, bh, PX.taskbar_bg);
     rect(bar_win, px, by, pw, bh, PX.main);
     XSetForeground(dpy, gc, PX.main);
@@ -1011,7 +1277,7 @@ static void draw_launcher(void)
     XMoveResizeWindow(dpy, launch_win, 8, y, 300, h);
     fill(launch_win, 0, 0, 300, h, PX.win_bg);
     rect(launch_win, 0, 0, 300, h, PX.main);
-    text_out(launch_win, 10, 8 + font->ascent, launch_q[0] ? "Search: core + installed apps" : "Core apps - type to search all", PX.main);
+    text_out(launch_win, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
     rect(launch_win, 10, 26, 280, 20, PX.main);
     text_out(launch_win, 14, 30 + font->ascent, launch_q, PX.text);
     int caret_x = 14 + text_w(launch_q);
@@ -1024,9 +1290,13 @@ static void draw_launcher(void)
     for (int r = 0; r < rows && launch_offset + r < n; r++) {
         struct launch_item *it = &launch_items[launch_offset + r];
         if (launch_offset + r == launch_sel) fill(launch_win, 6, yy - 3, 288, 22, PX.bar_hi);
-        text_out(launch_win, 12, yy + 4 + font->ascent, it->glyph, PX.main);
-        clipped_text(launch_win, 44, yy + 4 + font->ascent, it->name, 248,
+        struct xicon *xi = xicon_get(it->icon, 20);
+        if (xicon_drawn(xi)) draw_xicon(launch_win, xi, 10, yy - 1);
+        else text_out(launch_win, 12, yy + 4 + font->ascent, it->glyph, PX.main);
+        clipped_text(launch_win, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
                      launch_offset + r == launch_sel ? PX.title_text : PX.text);
+        if (it->app_idx >= 0 && app_is_pinned(it->app_idx))
+            text_out(launch_win, 262, yy + 4 + font->ascent, "PIN", PX.main);
         yy += 24;
     }
     if (!n) text_out(launch_win, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
@@ -1043,7 +1313,7 @@ static void launcher_toggle(int open)
         XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
         draw_launcher();
     } else if (!open && launch_open) {
-        launch_open = 0;
+        launch_open = 0; launch_pin_mode = 0;
         XUnmapWindow(dpy, launch_win);
         XUngrabKeyboard(dpy, CurrentTime);
         draw_bar();
@@ -1069,8 +1339,8 @@ static void menu_open(int kind, int x, int y, Window target)
         for (int i = 0; i < menu_n; i++) snprintf(menu_labels[i], 64, "%s", items[i]);
     } else if (kind == MENU_DESKTOP) {
         static const char *items[] = { "Terminal", "Files", "SysMon", "Settings",
-                                       "App Launcher", "Restart WM", "Exit WM" };
-        menu_n = 7;
+                                       "Add/Remove App...", "App Launcher", "Restart WM", "Exit WM" };
+        menu_n = 8;
         for (int i = 0; i < menu_n; i++) snprintf(menu_labels[i], 64, "%s", items[i]);
     } else {
         static const char *items[] = { "Minimise", "Maximise / Restore", "Close" };
@@ -1167,12 +1437,13 @@ static void menu_action(int idx)
         case 1: run_core_action(CORE_FILES); break;
         case 2: run_core_action(CORE_SYSMON); break;
         case 3: run_core_action(CORE_SETTINGS); break;
-        case 4: launcher_toggle(1); break;
-        case 5:
+        case 4: launch_pin_mode = 1; launcher_toggle(1); break;
+        case 5: launcher_toggle(1); break;
+        case 6:
             while (nclients) remove_client(clients[0], 1);
             execvp("/proc/self/exe", saved_argv);
             break;
-        case 6: running = 0; break;
+        case 7: running = 0; break;
         }
     } else if (kind == MENU_TITLE) {
         struct client *c = find_client(target);
@@ -1250,7 +1521,7 @@ static void on_button(XButtonEvent *e)
             draw_menu();
             return;
         }
-        int pw_x = screen_w - 100 - 34 - 16;
+        int pw_x = bar_power_x();
         if (e->x >= pw_x && e->x < pw_x + 34 && e->y >= 6) {
             menu_open(MENU_POWER, pw_x - 140, screen_h - bar_h - (6 * 24 + 8), None);
             return;
@@ -1282,6 +1553,12 @@ static void on_button(XButtonEvent *e)
         int row = (e->y - 53) / 24;
         int n = launch_rebuild();
         int idx = launch_offset + row;
+        if ((e->button == Button3 || (e->button == Button1 && launch_pin_mode)) &&
+            idx >= 0 && idx < n && launch_items[idx].app_idx >= 0) {
+            toggle_app_pin(launch_items[idx].app_idx);
+            draw_launcher();
+            return;
+        }
         if (e->button == Button1 && idx >= 0 && idx < n) {
             struct launch_item it = launch_items[idx];
             launcher_toggle(0);
@@ -1532,6 +1809,7 @@ static void build_pins(void)
         if (core >= 0) {
             snprintf(p->label, sizeof(p->label), "%s", core_apps[core].name);
             snprintf(p->glyph, sizeof(p->glyph), "%s", core_apps[core].glyph);
+            snprintf(p->icon, sizeof(p->icon), "%s", core_apps[core].icon);
             p->action = core_apps[core].action;
             npins++;
             continue;
@@ -1550,6 +1828,7 @@ static void build_pins(void)
             snprintf(p->command, sizeof(p->command), "%s", cmd);
             snprintf(p->label, sizeof(p->label), "%s", apps[found].name);
             snprintf(p->match, sizeof(p->match), "%s", apps[found].id);
+            snprintf(p->icon, sizeof(p->icon), "%s", apps[found].icon[0] ? apps[found].icon : apps[found].id);
             pin_set_glyph(p, "");
             npins++;
             continue;
@@ -1559,6 +1838,7 @@ static void build_pins(void)
         snprintf(p->label, sizeof(p->label), "%s", tok);
         snprintf(p->command, sizeof(p->command), "%s", tok);
         snprintf(p->match, sizeof(p->match), "%s", tok);
+        snprintf(p->icon, sizeof(p->icon), "%s", tok);
         p->label[0] = (char)toupper((unsigned char)p->label[0]);
         pin_set_glyph(p, "");
         npins++;
@@ -2126,7 +2406,7 @@ int main(int argc, char **argv)
         atoms[A_NET_CURRENT_DESKTOP], atoms[A_NET_WORKAREA], atoms[A_NET_FRAME_EXTENTS],
         atoms[A_NET_CLOSE_WINDOW], atoms[A_NET_MOVERESIZE_WINDOW], atoms[A_NET_WM_STATE],
         atoms[A_NET_WM_STATE_MAXIMIZED_VERT], atoms[A_NET_WM_STATE_MAXIMIZED_HORZ],
-        atoms[A_NET_WM_STATE_FULLSCREEN], atoms[A_NET_WM_STATE_HIDDEN],
+        atoms[A_NET_WM_STATE_FULLSCREEN], atoms[A_NET_WM_STATE_HIDDEN], atoms[A_NET_WM_ICON],
     };
     XChangeProperty(dpy, root, atoms[A_NET_SUPPORTED], XA_ATOM, 32, PropModeReplace,
                     (unsigned char *)supported, (int)(sizeof(supported) / sizeof(supported[0])));
@@ -2227,6 +2507,9 @@ int main(int argc, char **argv)
                     read_title(c); draw_frame(c); draw_bar();
                 } else if (c && ev.xproperty.atom == XA_WM_NORMAL_HINTS) {
                     read_hints(c);
+                } else if (c && ev.xproperty.atom == atoms[A_NET_WM_ICON]) {
+                    xicon_destroy_owned(c->icon);
+                    c->icon = client_load_icon(c); draw_bar();
                 } else if (ev.xproperty.atom == atoms[A_NET_WM_STRUT_PARTIAL]) {
                     recalc_struts();
                 }

@@ -174,6 +174,41 @@ int main(void)
     utf8_to_latin1("\xc3", lat, sizeof(lat));                          /* broken sequence */
     CHECK(!strcmp(lat, ""));
 
+
+    /* freedesktop icon lookup + PNG/XMP decoding at normal icon sizes */
+    {
+        static const unsigned char png_bytes[] = {
+            137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,36,0,0,0,21,73,68,65,84,120,156,99,248,207,240,31,136,64,16,8,24,24,254,55,0,0,96,50,10,119,93,233,27,79,0,0,0,0,73,69,78,68,174,66,96,130
+        };
+        char icons[512], theme_dir[512], size_dir[512], app_dir[512], png_path[512];
+        snprintf(icons, sizeof(icons), "%s/icons", dir); mkdir(icons, 0755);
+        snprintf(theme_dir, sizeof(theme_dir), "%s/hicolor", icons); mkdir(theme_dir, 0755);
+        snprintf(size_dir, sizeof(size_dir), "%s/24x24", theme_dir); mkdir(size_dir, 0755);
+        snprintf(app_dir, sizeof(app_dir), "%s/apps", size_dir); mkdir(app_dir, 0755);
+        snprintf(png_path, sizeof(png_path), "%s/testapp.png", app_dir);
+        FILE *pf = fopen(png_path, "wb"); CHECK(pf != NULL);
+        if (pf) { fwrite(png_bytes, 1, sizeof(png_bytes), pf); fclose(pf); }
+        const char *roots[] = { icons };
+        char resolved[512];
+        CHECK(icon_resolve_in("testapp", roots, 1, 24, resolved, sizeof(resolved)));
+        CHECK(strstr(resolved, "24x24/apps/testapp.png") != NULL);
+        struct rgba_image img;
+        CHECK(rgba_image_load(resolved, &img));
+        CHECK(img.w == 2 && img.h == 2);
+        CHECK(img.pixels[0] == 255 && img.pixels[1] == 0 && img.pixels[2] == 255 && img.pixels[3] == 255);
+        CHECK(img.pixels[15] == 128);
+        CHECK(rgba_image_scale_fit(&img, 1, 1) && img.w == 1 && img.h == 1);
+        rgba_image_free(&img);
+
+        char xpm_path[512];
+        snprintf(xpm_path, sizeof(xpm_path), "%s/testapp.xpm", app_dir);
+        write_file(xpm_path,
+            "/* XPM */\nstatic char *x[] = {\n\"2 2 2 1\",\n\"r c #FF0000\",\n\". c None\",\n\"r.\",\".r\"};\n");
+        CHECK(rgba_image_load(xpm_path, &img));
+        CHECK(img.w == 2 && img.pixels[0] == 255 && img.pixels[3] == 255 && img.pixels[7] == 0);
+        rgba_image_free(&img);
+    }
+
     if (failures) { printf("%d CHECK(s) failed\n", failures); return 1; }
     printf("test_util: all checks passed\n");
     return 0;

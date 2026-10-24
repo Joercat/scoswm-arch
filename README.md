@@ -6,8 +6,9 @@
 your ordinary Linux applications — terminals, browsers, editors, games —
 while looking and behaving like the [SCos](https://github.com/Joercat/SCos)
 desktop: the bottom taskbar with its 2×2-grid launcher, "Windows N"
-picker, pinned shortcuts, power button and clock; desktop icons on a
-snap grid over a gradient+grid wallpaper; 26 px titlebars with
+picker, pinned shortcuts, power button and clock; desktop icons with
+real freedesktop app images on a snap grid over a gradient+grid
+wallpaper; 26 px titlebars with
 minimise/maximise/close buttons; and the four SCos themes
 (**Matrix** `matrix-1`, **Blue Sky** `blue-sky`, **Purple**
 `midnight-purple`, **Matrix red** `amber-tech`) with the exact palettes
@@ -32,14 +33,17 @@ the normal config file.
 - **One code path for your GPU.** Xorg runs on the NVIDIA proprietary
   driver and on nouveau with identical behaviour — no per-driver
   compositor quirks. Intel/AMD work the same way for when you need them.
-- **No compositor tax.** Clients render directly through the X server
-  and the GPU driver; `scoswm` itself only draws window decorations
-  and the taskbar. Idle cost is a few MB of RAM and ~0% CPU (it blocks
-  on the X connection and wakes once a second for the clock).
+- **GPU acceleration stays on.** There is no software compositor to
+  bypass or accelerate: OpenGL/Vulkan clients render directly through
+  Xorg and the GPU driver (GLX/DRI on NVIDIA proprietary and nouveau),
+  while `scoswm` itself only draws window decorations and the taskbar.
+  Idle cost is a few MB of RAM and ~0% CPU (it blocks on the X
+  connection and wakes once a second for the clock).
 - **Wayland programs still work** through XWayland, which every major
   toolkit supports.
 
-The only runtime dependency is `libX11`.
+The only runtime dependencies are `libX11` and zlib (the latter is
+used to decode standard PNG app icons).
 
 ## Install
 
@@ -69,6 +73,7 @@ startx
 |---|---|
 | Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too |
 | Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
+| Add/remove Home apps | Right-click the desktop and choose **Add/Remove App...**, or right-click any searched app in the launcher. Pinned apps appear on the desktop and taskbar and are saved in `pins` |
 | Window list | "Windows N" taskbar button |
 | Move / resize | Drag the titlebar / bottom-right grip, or `Alt+drag` / `Alt+right-drag` anywhere |
 | Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click titlebar/taskbar button for a menu |
@@ -79,6 +84,14 @@ startx
 | Minimise / maximise focused | `Alt+F9` / `Alt+F10` |
 | Desktop menu | Right-click the desktop |
 | Power menu | Taskbar power button: lock, restart/exit the WM, suspend, reboot, power off (via `systemctl`) |
+
+Desktop, taskbar and launcher icons are the apps' real
+`Icon=` images, resolved from the freedesktop icon theme and
+`/usr/share/pixmaps` (PNG/XPM) at the normal small sizes — 24 px on
+the desktop, 20 px in taskbar pins and 16 px beside running-window
+titles. Icons are decoded once and cached as X pixmaps; an app with no
+readable PNG/XPM icon keeps the SCos letter-glyph fallback rather than
+growing the layout.
 
 The launcher's normal view is deliberately curated to the four core
 apps plus your pins. Once you type, it also searches `.desktop` files

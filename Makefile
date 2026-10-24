@@ -4,8 +4,8 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.3.0"'
-LDLIBS   = -lX11
+CPPFLAGS += -DVERSION='"0.4.0"'
+LDLIBS   = -lX11 -lz
 PREFIX  ?= /usr
 DESTDIR ?=
 
@@ -24,7 +24,7 @@ check: scoswm test_util
 	./tests/run_integration.sh ./scoswm
 
 test_util: tests/test_util.c src/util.c src/util.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_util.c src/util.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_util.c src/util.c -lz
 
 install: scoswm
 	install -Dm755 scoswm $(DESTDIR)$(PREFIX)/bin/scoswm
