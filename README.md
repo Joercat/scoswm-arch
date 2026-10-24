@@ -121,13 +121,13 @@ startx
 
 | Action | How |
 |---|---|
-| Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too |
+| Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too. Choose **All installed apps...** to browse without typing; the mouse wheel scrolls the list |
 | Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
 | Add/remove Home apps | Right-click the desktop and choose **Add/Remove App...**, or right-click any searched app in the launcher. Pinned apps appear on the desktop and taskbar and are saved in `pins` |
 | Window list | "Windows N" taskbar button |
-| Move / resize | Drag the titlebar / bottom-right grip, or `Alt+drag` / `Alt+right-drag` anywhere |
-| Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click titlebar/taskbar button for a menu |
-| Cycle windows | `Alt+Tab` / `Alt+Shift+Tab` |
+| Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
+| Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click titlebar/taskbar button for a menu. Minimise and restore have a short transition |
+| Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
 | Close focused window | `Alt+F4` or `Super+Q` |

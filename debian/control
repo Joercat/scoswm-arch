@@ -18,7 +18,8 @@ Recommends: xserver-xorg-core,
  xinit,
  xterm | x-terminal-emulator,
  xdg-utils,
- dbus-x11
+ dbus-x11,
+ libxcursor1
 Suggests: sddm,
  slock | i3lock | suckless-tools,
  thunar | pcmanfm | nautilus | dolphin | nemo

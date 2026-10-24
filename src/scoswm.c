@@ -24,7 +24,10 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
+#include <X11/cursorfont.h>
 #include <X11/keysym.h>
+
+#include <dlfcn.h>
 
 #include <ctype.h>
 #include <dirent.h>
@@ -49,7 +52,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.4.3"
+#define VERSION "0.4.4"
 #endif
 
 #define TITLE_H 26
@@ -138,6 +141,14 @@ static struct pin pins[32];
 static int npins;
 
 static unsigned long desk_sel_mask;
+static int desk_hover = -1;
+static int bar_hover = -1;          /* -1 none, >=0 bar_items idx, -2 start, -3 windows, -4 power */
+static int bar_press = -1;          /* bar_items idx held down, -1 none */
+static int bar_flash_pin = -1;      /* pin idx showing launch feedback */
+static time_t bar_flash_until;
+static struct client *hover_frame_client;
+static int hover_title_btn = -1;
+static Cursor wm_cursor;
 static int strut_l, strut_r, strut_t, strut_b;   /* external (other docks) */
 
 static void die(const char *fmt, ...)
@@ -398,6 +409,9 @@ static void send_proto(struct client *c, Atom a)
 /* forward declarations for the UI half */
 static void draw_frame(struct client *c);
 static void draw_bar(void);
+static void bar_layout(void);
+static void animate_minimize(struct client *c);
+static void animate_restore(struct client *c);
 static struct xicon *xicon_get(const char *spec, int size);
 static void draw_xicon(Window dst, struct xicon *xi, int x, int y);
 static struct xicon *client_load_icon(struct client *c);
@@ -438,8 +452,7 @@ static void activate(struct client *c, int raise)
     if (!c) return;
     if (c->minimized) {
         c->minimized = 0;
-        XMapWindow(dpy, c->win);
-        XMapWindow(dpy, c->frame);
+        animate_restore(c);
         set_wm_state(c, NormalState);
     }
     /* move to the top of the manage list = stacking/focus order */
@@ -474,6 +487,7 @@ static void focus_top(void)
 static void minimize(struct client *c)
 {
     if (!c || c->minimized) return;
+    animate_minimize(c);
     c->minimized = 1;
     XUnmapWindow(dpy, c->frame);
     XUnmapWindow(dpy, c->win);
@@ -532,9 +546,21 @@ static struct {
     struct client *c;
     int start_x, start_y;   /* pointer at grab */
     int ox, oy, ow, oh;     /* frame/client geometry at grab */
+    int edges;              /* resize edges: 1 left 2 right 4 top 8 bottom */
     int moved;
     int band_x, band_y, band_drawn;
 } drag;
+
+static void grab_drag_pointer(struct client *c, Time t)
+{
+    /* Do not rely on the client's implicit button grab: it can keep
+     * motion and release events away from the WM, especially when the
+     * drag began in the client area. Grab the frame (or root for a
+     * desktop band) until the release is handled by on_button(). */
+    XGrabPointer(dpy, c ? c->frame : root, False,
+                 PointerMotionMask | ButtonReleaseMask,
+                 GrabModeAsync, GrabModeAsync, None, None, t);
+}
 
 static void remove_client(struct client *c, int reparent)
 {
@@ -547,7 +573,14 @@ static void remove_client(struct client *c, int reparent)
         XRemoveFromSaveSet(dpy, c->win);
         XUngrabServer(dpy);
     }
-    if (drag.c == c) { drag.kind = 0; drag.c = NULL; }
+    if (drag.c == c) {
+        XUngrabPointer(dpy, CurrentTime);
+        drag.kind = 0; drag.c = NULL;
+    }
+    if (hover_frame_client == c) {
+        hover_frame_client = NULL;
+        hover_title_btn = -1;
+    }
     XDestroyWindow(dpy, c->frame);
     xicon_destroy_owned(c->icon);
     memmove(&clients[idx], &clients[idx + 1], (nclients - idx - 1) * sizeof(*clients));
@@ -658,12 +691,15 @@ static void manage(Window win)
 
     XSetWindowAttributes fa;
     fa.background_pixel = PX.win_bg;
+    if (wm_cursor) fa.cursor = wm_cursor;
     fa.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
-                    PointerMotionMask | EnterWindowMask | StructureNotifyMask;
+                    PointerMotionMask | EnterWindowMask | LeaveWindowMask |
+                    StructureNotifyMask;
     fa.override_redirect = True;
     c->frame = XCreateWindow(dpy, root, c->x, c->y, frame_w(c), frame_h(c), 0,
                              CopyFromParent, InputOutput, CopyFromParent,
-                             CWBackPixel | CWEventMask | CWOverrideRedirect, &fa);
+                             CWBackPixel | CWEventMask | CWOverrideRedirect |
+                             (wm_cursor ? CWCursor : 0), &fa);
     if (c->fullscreen) { c->x = 0; c->y = 0; c->w = screen_w; c->h = screen_h; }
     else if (c->maximized) {
         c->sx = c->x; c->sy = c->y; c->sw = c->w; c->sh = c->h;
@@ -674,6 +710,13 @@ static void manage(Window win)
     XReparentWindow(dpy, win, c->frame, c->fullscreen ? 0 : 1, c->fullscreen ? 0 : TOP_H);
     XAddToSaveSet(dpy, win);
     XSelectInput(dpy, win, StructureNotifyMask | PropertyChangeMask | FocusChangeMask);
+    /* A passive grab lets the WM offer edge resizing without selecting
+     * (and potentially stealing) the application's normal input. Ordinary
+     * left clicks are replayed to the client in on_button(); an edge
+     * press keeps the grab so motion and release reliably reach the WM. */
+    XGrabButton(dpy, Button1, 0, win, False,
+                ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
+                GrabModeSync, GrabModeAsync, None, None);
     for (int b = Button1; b <= Button3; b++)
         XGrabButton(dpy, b, Mod1Mask, win, False,
                     ButtonPressMask | ButtonReleaseMask | PointerMotionMask,
@@ -881,6 +924,7 @@ static void run_core_action(int action)
 /* ---------------------------------------------------------------- menus */
 enum { MENU_NONE, MENU_POWER, MENU_DESKTOP, MENU_TITLE, MENU_PICKER = 98, MENU_MESSAGE = 99 };
 static int menu_kind, menu_n;
+static int menu_hover = -1;
 static char menu_labels[8][64];
 static Window menu_target;           /* title menu: the client acted on */
 static int menu_x, menu_y, menu_w = 190;
@@ -951,8 +995,12 @@ static void draw_frame(struct client *c)
     clipped_text(f, 8, 5 + font->ascent, c->title, fw - 96,
                  focused ? PX.title_text : PX.text);
     unsigned long fg = focused ? PX.title_text : PX.text;
-    for (int b = 0; b < 3; b++)
-        draw_button_glyph(f, fw - 22 - (2 - b) * 22, 4, b, fg);
+    for (int b = 0; b < 3; b++) {
+        int bx = fw - 22 - (2 - b) * 22;
+        if (c == hover_frame_client && b == hover_title_btn)
+            fill(f, bx, 3, BTN_SZ, BTN_SZ, b == 2 ? PX.main : PX.bar_hi);
+        draw_button_glyph(f, bx, 4, b, fg);
+    }
     /* resize grip, like SCos's diagonal dots */
     XSetForeground(dpy, gc, PX.bar_hi);
     for (int i = 0; i < 4; i++)
@@ -1143,18 +1191,20 @@ static void icon_rect(int i, int *x, int *y)
 
 static void paint_desktop(Drawable d)
 {
-    /* Painted straight onto the root window (Expose events repaint it)
-     * rather than via a background pixmap, so the desktop also works
-     * on minimal X servers that ignore root pixmaps. */
+    /* Paint everything into the supplied drawable. When draw_desktop()
+     * passes its wallpaper pixmap, the gradient, grid and icons must all
+     * land in that pixmap: painting any layer straight onto the root is
+     * then immediately covered by the pixmap copy, which both hid the
+     * grid and made every repaint visibly flicker. */
     for (int y = 0; y < screen_h; y++) {
         unsigned int rgb = color_blend_rgb(theme.bg_top, theme.bg_bot,
                                            screen_h > 1 ? y * 255 / (screen_h - 1) : 0);
         XSetForeground(dpy, gc, alloc_rgb(rgb));
-        XFillRectangle(dpy, root, gc, 0, y, screen_w, 1);
+        XFillRectangle(dpy, d, gc, 0, y, screen_w, 1);
     }
     XSetForeground(dpy, gc, PX.grid);
-    for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, root, gc, x, 0, x, screen_h);
-    for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, root, gc, 0, y, screen_w, y);
+    for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
+    for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
 
     /* desktop icons on the SCos 88x96 snap grid */
     for (int i = 0; i < npins; i++) {
@@ -1162,6 +1212,9 @@ static void paint_desktop(Drawable d)
         if (desk_sel_mask & (1ul << i)) {
             fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 30)));
             rect(d, x, y, 80, 88, PX.main);
+        } else if (i == desk_hover) {
+            fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 16)));
+            rect(d, x, y, 80, 88, PX.title_off);
         }
         /* proper freedesktop image at the normal 24x24 SCos size;
          * the framed letter glyph remains only as a fallback */
@@ -1261,14 +1314,14 @@ static void draw_bar(void)
     fill(bar_win, 0, 0, screen_w, 1, PX.main);
     int by = 6, bh = bar_h - 12;
     /* launcher button: the 2x2 SCos grid */
-    fill(bar_win, 8, by, 34, bh, launch_open ? PX.bar_hi : PX.taskbar_bg);
+    fill(bar_win, 8, by, 34, bh, launch_open || bar_hover == -2 ? PX.bar_hi : PX.taskbar_bg);
     rect(bar_win, 8, by, 34, bh, PX.main);
     for (int q = 0; q < 4; q++)
         fill(bar_win, 15 + (q % 2) * 11, by + 6 + (q / 2) * 9, 8, 6,
              launch_open ? PX.title_text : PX.main);
     /* Windows N picker */
     char wl[32]; snprintf(wl, sizeof(wl), "Windows %d", nclients);
-    fill(bar_win, 48, by, 110, bh, PX.taskbar_bg);
+    fill(bar_win, 48, by, 110, bh, bar_hover == -3 ? PX.bar_hi : PX.taskbar_bg);
     rect(bar_win, 48, by, 110, bh, PX.main);
     clipped_text(bar_win, 56, by + 6 + font->ascent, wl, 94, PX.text);
 
@@ -1277,7 +1330,9 @@ static void draw_bar(void)
         struct bar_item *it = &bar_items[i];
         if (it->kind == 1) {
             struct pin *p = &pins[it->idx];
-            fill(bar_win, it->x, by, 34, bh, PX.taskbar_bg);
+            int lit = bar_press == i || bar_hover == i ||
+                      (bar_flash_pin == it->idx && time(NULL) <= bar_flash_until);
+            fill(bar_win, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
             rect(bar_win, it->x, by, 34, bh, PX.main);
             struct xicon *xi = xicon_get(p->icon, bh < 20 ? bh : 20);
             if (xicon_drawn(xi))
@@ -1290,7 +1345,7 @@ static void draw_bar(void)
             struct client *c = clients[it->idx];
             int foc = active_client == c;
             fill(bar_win, it->x, by, it->w, bh,
-                 foc ? PX.bar_hi : PX.taskbar_bg);
+                 foc || bar_press == i || bar_hover == i ? PX.bar_hi : PX.taskbar_bg);
             rect(bar_win, it->x, by, it->w, bh, PX.main);
             int tx = it->x + 6;
             if (xicon_drawn(c->icon)) {
@@ -1306,7 +1361,7 @@ static void draw_bar(void)
     }
     /* power button */
     int pw = 34, px = bar_power_x();
-    fill(bar_win, px, by, pw, bh, PX.taskbar_bg);
+    fill(bar_win, px, by, pw, bh, bar_hover == -4 ? PX.bar_hi : PX.taskbar_bg);
     rect(bar_win, px, by, pw, bh, PX.main);
     XSetForeground(dpy, gc, PX.main);
     XDrawArc(dpy, bar_win, gc, px + pw / 2 - 7, by + bh / 2 - 5, 14, 14, 45 * 64, 270 * 64);
@@ -1317,6 +1372,69 @@ static void draw_bar(void)
     char clock[16];
     snprintf(clock, sizeof(clock), "%02d:%02d:%02d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
     text_out(bar_win, screen_w - text_w(clock) - 10, by + 6 + font->ascent, clock, PX.main);
+}
+
+/* Short, synchronous minimise/restore transitions. Six quick steps are
+ * enough to stop windows feeling like they teleport, without adding a
+ * compositor, a timer loop, or any idle cost: nothing runs at all while
+ * no window is animating. */
+static int taskbar_rect_for_client(struct client *c, int *x, int *y, int *w, int *h)
+{
+    bar_layout();
+    for (int i = 0; i < bar_n; i++) {
+        if (bar_items[i].kind == 0 && clients[bar_items[i].idx] == c) {
+            *x = bar_items[i].x; *y = screen_h - bar_h + 6;
+            *w = bar_items[i].w; *h = bar_h - 12;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void animate_frame_between(struct client *c,
+                                  int sx, int sy, int sw, int sh,
+                                  int tx, int ty, int tw, int th)
+{
+    for (int step = 1; step <= 6; step++) {
+        int x = sx + (tx - sx) * step / 6;
+        int y = sy + (ty - sy) * step / 6;
+        int w = sw + (tw - sw) * step / 6;
+        int h = sh + (th - sh) * step / 6;
+        if (w < 4) w = 4;
+        if (h < 4) h = 4;
+        XMoveResizeWindow(dpy, c->frame, x, y, w, h);
+        XMoveResizeWindow(dpy, c->win, c->fullscreen ? 0 : 1,
+                          c->fullscreen ? 0 : TOP_H,
+                          w > 2 ? w - 2 : 1,
+                          h > TOP_H + 1 ? h - TOP_H - 1 : 1);
+        XFlush(dpy);
+        usleep(12000);
+    }
+}
+
+static void animate_minimize(struct client *c)
+{
+    int tx, ty, tw, th;
+    if (!c || c->fullscreen || !taskbar_rect_for_client(c, &tx, &ty, &tw, &th)) return;
+    animate_frame_between(c, c->x, c->y, frame_w(c), frame_h(c), tx, ty, tw, th);
+}
+
+static void animate_restore(struct client *c)
+{
+    int tx, ty, tw, th;
+    if (!c || c->fullscreen || !taskbar_rect_for_client(c, &tx, &ty, &tw, &th)) {
+        XMapWindow(dpy, c->win);
+        XMapWindow(dpy, c->frame);
+        return;
+    }
+    int fx = c->x, fy = c->y, fw = frame_w(c), fh = frame_h(c);
+    XMoveResizeWindow(dpy, c->frame, tx, ty, tw, th);
+    XMoveResizeWindow(dpy, c->win, 1, TOP_H, tw > 2 ? tw - 2 : 1,
+                      th > TOP_H + 1 ? th - TOP_H - 1 : 1);
+    XMapWindow(dpy, c->win);
+    XMapWindow(dpy, c->frame);
+    animate_frame_between(c, tx, ty, tw, th, fx, fy, fw, fh);
+    client_place(c);
 }
 
 /* ------------------------------------------------------ launcher window */
@@ -1375,6 +1493,7 @@ static void menu_close(void)
 {
     if (menu_kind == MENU_NONE) return;
     menu_kind = MENU_NONE;
+    menu_hover = -1;
     XUnmapWindow(dpy, menu_win);
     XUngrabKeyboard(dpy, CurrentTime);
 }
@@ -1383,6 +1502,7 @@ static void menu_open(int kind, int x, int y, Window target)
 {
     menu_close();
     menu_kind = kind; menu_target = target;
+    menu_hover = -1;
     if (kind == MENU_POWER) {
         static const char *items[] = { "Lock", "Restart WM", "Exit WM", "Suspend", "Reboot", "Power Off" };
         menu_n = 6;
@@ -1415,8 +1535,11 @@ static void draw_menu(void)
     int w = menu_w, h = menu_n * 24 + 6;
     fill(menu_win, 0, 0, w, h, PX.win_bg);
     rect(menu_win, 0, 0, w, h, PX.main);
-    for (int i = 0; i < menu_n; i++)
-        clipped_text(menu_win, 10, 3 + i * 24 + 4 + font->ascent, menu_labels[i], w - 20, PX.text);
+    for (int i = 0; i < menu_n; i++) {
+        if (i == menu_hover) fill(menu_win, 2, 3 + i * 24, w - 4, 24, PX.bar_hi);
+        clipped_text(menu_win, 10, 3 + i * 24 + 4 + font->ascent, menu_labels[i], w - 20,
+                     i == menu_hover ? PX.title_text : PX.text);
+    }
     XRaiseWindow(dpy, menu_win);
 }
 
@@ -1446,6 +1569,26 @@ static int title_button_at(struct client *c, int rx, int ry)
         if (rx >= bx && rx < bx + BTN_SZ && ry >= 3 && ry < 3 + BTN_SZ) return b;
     }
     return -1;
+}
+
+/* Resize zones in frame coordinates: a 7 px band inside every edge and
+ * corner of the frame. The old code only recognised an 18 px grip that
+ * was tested on frame events, but the frame border is 1 px wide, so a
+ * pointer over the visible edge is almost always over the *client*
+ * window and the grip was effectively unreachable. Testing the client
+ * area too (the caller passes client presses with the frame offset
+ * already added) makes the edges real. */
+static int resize_edges_at(struct client *c, int rx, int ry)
+{
+    if (c->maximized || c->fullscreen) return 0;
+    if (title_button_at(c, rx, ry) >= 0) return 0;
+    int fw = frame_w(c), fh = frame_h(c);
+    int edges = 0;
+    if (rx >= 0 && rx < 7) edges |= 1;
+    if (rx >= fw - 7 && rx < fw) edges |= 2;
+    if (ry >= 0 && ry < 5) edges |= 4;
+    if (ry >= fh - 7 && ry < fh) edges |= 8;
+    return edges;
 }
 
 static void menu_action(int idx)
@@ -1520,8 +1663,20 @@ static void on_button(XButtonEvent *e)
 {
     Window w = e->window;
     int x = e->x_root, y = e->y_root;
+    struct client *press_client = find_client(w);
+    int passive_client_press = e->type == ButtonPress && e->button == Button1 &&
+                               !(e->state & Mod1Mask) && press_client &&
+                               press_client->win == w;
+    if (e->type == ButtonPress && w != root && desk_sel_mask) {
+        desk_sel_mask = 0;
+        draw_desktop();
+    }
 
-    if (menu_kind != MENU_NONE && w != menu_win) { menu_close(); return; }
+    if (menu_kind != MENU_NONE && w != menu_win) {
+        menu_close();
+        if (passive_client_press) XAllowEvents(dpy, ReplayPointer, e->time);
+        return;
+    }
     if (w == menu_win) {
         if (e->type != ButtonRelease || e->button != Button1) return;
         int idx = (e->y - 3) / 24;
@@ -1536,7 +1691,10 @@ static void on_button(XButtonEvent *e)
     }
     if (tool_kind != TOOL_NONE) {
         if (w == tool_win) tool_button(e);
-        else tool_close();
+        else {
+            tool_close();
+            if (passive_client_press) XAllowEvents(dpy, ReplayPointer, e->time);
+        }
         return;
     }
     if (launch_open && w != launch_win && w != bar_win) launcher_toggle(0);
@@ -1548,6 +1706,7 @@ static void on_button(XButtonEvent *e)
      * repaints (suppressed mid-drag) never resumed, so closed windows
      * left ghost frames on the desktop. */
     if (e->type == ButtonRelease && drag.kind) {
+        XUngrabPointer(dpy, CurrentTime);
         if (drag.kind == 3) {
             drag.band_x = x; drag.band_y = y;
             desk_sel_mask = 0;
@@ -1571,7 +1730,15 @@ static void on_button(XButtonEvent *e)
     }
 
     if (w == bar_win) {
+        if (e->type == ButtonRelease) {
+            if (bar_press != -1) { bar_press = -1; draw_bar(); }
+            return;
+        }
         if (e->type != ButtonPress) return;
+        if (e->button == Button4 || e->button == Button5) {
+            cycle(e->button == Button5 ? 1 : -1);
+            return;
+        }
         if (e->x >= 8 && e->x < 42 && e->y >= 6) { launcher_toggle(!launch_open); return; }
         if (e->x >= 48 && e->x < 158 && e->y >= 6) {
             /* Windows picker as a SCos-style menu of open windows */
@@ -1600,10 +1767,23 @@ static void on_button(XButtonEvent *e)
             struct bar_item *it = &bar_items[i];
             if (e->x >= it->x && e->x < it->x + it->w && e->y >= 6) {
                 if (it->kind == 1) {
-                    if (e->button == Button1) launch_pin(it->idx);
+                    if (e->button == Button1) {
+                        /* Instant visible feedback on mousedown, plus a
+                         * short "starting" flash afterwards: launching a
+                         * real app can take a second or two, and with no
+                         * response at all a normal click looked like it
+                         * had to be held down to register. */
+                        bar_press = i;
+                        bar_flash_pin = it->idx;
+                        bar_flash_until = time(NULL) + 2;
+                        draw_bar();
+                        launch_pin(it->idx);
+                    }
                 } else {
                     struct client *c = clients[it->idx];
                     if (e->button == Button1) {
+                        bar_press = i;
+                        draw_bar();
                         if (active_client == c && !c->minimized) minimize(c);
                         else activate(c, 1);
                     } else if (e->button == Button3) {
@@ -1618,8 +1798,20 @@ static void on_button(XButtonEvent *e)
 
     if (w == launch_win) {
         if (e->type != ButtonPress) return;
-        if (e->button == Button4) { if (launch_offset > 0) launch_offset--; draw_launcher(); return; }
-        if (e->button == Button5) { launch_offset++; draw_launcher(); return; }
+        if (e->button == Button4 || e->button == Button5) {
+            /* Move the selection, not just the scroll offset: draw_launcher()
+             * clamps the offset so the selection stays visible, so nudging
+             * the offset alone snapped straight back and the wheel looked
+             * dead in the All Apps list. */
+            int n2 = launch_rebuild();
+            if (n2 > 0) {
+                launch_sel += e->button == Button5 ? 3 : -3;
+                if (launch_sel < 0) launch_sel = 0;
+                if (launch_sel >= n2) launch_sel = n2 - 1;
+            }
+            draw_launcher();
+            return;
+        }
         int row = (e->y - 53) / 24;
         int n = launch_rebuild();
         int idx = launch_offset + row;
@@ -1659,6 +1851,10 @@ static void on_button(XButtonEvent *e)
             return;
         }
         if (e->type != ButtonPress) return;
+        if (e->button == Button4 || e->button == Button5) {
+            cycle(e->button == Button5 ? 1 : -1);
+            return;
+        }
         if (e->button == Button3) {
             menu_open(MENU_DESKTOP, x, y, None);
             return;
@@ -1683,8 +1879,12 @@ static void on_button(XButtonEvent *e)
             return;
         }
         last_click.icon = -1;
-        /* rubber band on empty desktop */
+        /* rubber band on empty desktop: clear any icon selection at once,
+         * otherwise the old highlight stayed painted until button release
+         * and looked like clicking off an icon never un-highlighted it */
+        if (desk_sel_mask) { desk_sel_mask = 0; draw_desktop(); }
         drag.kind = 3; drag.start_x = drag.band_x = x; drag.start_y = drag.band_y = y;
+        grab_drag_pointer(NULL, e->time);
         desk_sel_mask = 0;
         return;
     }
@@ -1704,18 +1904,42 @@ static void on_button(XButtonEvent *e)
     }
     if (e->type != ButtonPress) return;
     if (c->minimized) return;
-    activate(c, 1);
+    if (is_frame && (e->button == Button4 || e->button == Button5)) {
+        cycle(e->button == Button5 ? 1 : -1);
+        return;
+    }
+    if (e->button <= Button3) activate(c, 1);
 
     int rx = is_frame ? e->x : e->x + 1;
     int ry = is_frame ? e->y : e->y + TOP_H;
     /* Alt+drag anywhere: move (left) / resize (right) */
     if (e->state & Mod1Mask) {
         drag.kind = e->button == Button3 ? 2 : 1;
+        drag.edges = e->button == Button3 ? (2 | 8) : 0;
         drag.c = c; drag.start_x = x; drag.start_y = y;
         drag.ox = c->x; drag.oy = c->y; drag.ow = c->w; drag.oh = c->h;
+        grab_drag_pointer(c, e->time);
         return;
     }
-    if (!is_frame) return;
+    /* Edge/corner resize, reachable from the client area as well as the
+     * 1 px frame: this is where the pointer actually is when someone
+     * grabs a window edge. */
+    if (e->button == Button1) {
+        int edges = resize_edges_at(c, rx, ry);
+        if (edges) {
+            drag.kind = 2; drag.edges = edges;
+            drag.c = c; drag.start_x = x; drag.start_y = y;
+            drag.ox = c->x; drag.oy = c->y; drag.ow = c->w; drag.oh = c->h;
+            /* The passive Button1 grab is already active here. Thaw its
+             * synchronous pointer mode so the WM receives the drag. */
+            XAllowEvents(dpy, AsyncPointer, e->time);
+            return;
+        }
+    }
+    if (!is_frame) {
+        if (e->button == Button1) XAllowEvents(dpy, ReplayPointer, e->time);
+        return;
+    }
 
     if (ry < TITLE_H && e->button == Button1) {
         int b = title_button_at(c, rx, ry);
@@ -1730,9 +1954,26 @@ static void on_button(XButtonEvent *e)
                   x - last_click.x < 6 && x - last_click.x > -6;
         last_click.t = e->time; last_click.x = x; last_click.y = y; last_click.icon = -2;
         if (dbl && !c->fullscreen) { set_maximized(c, !c->maximized); return; }
-        if (c->maximized || c->fullscreen) return;
-        drag.kind = 1; drag.c = c; drag.start_x = x; drag.start_y = y;
+        if (c->fullscreen) return;
+        if (c->maximized) {
+            /* Dragging a maximised titlebar restores the window and
+             * keeps it under the pointer, so "everything opens
+             * maximised" is escapable with the most natural gesture
+             * there is (double-click titlebar and Alt+F10 already
+             * toggled it, but nobody finds those first). */
+            set_maximized(c, 0);
+            int wx, wy, ww, wh; work_area(&wx, &wy, &ww, &wh);
+            c->x = x - frame_w(c) / 2;
+            c->y = y - TITLE_H / 2;
+            if (c->x < wx) c->x = wx;
+            if (c->x + frame_w(c) > wx + ww) c->x = wx + ww - frame_w(c);
+            if (c->y < wy) c->y = wy;
+            client_place(c);
+            draw_frame(c);
+        }
+        drag.kind = 1; drag.edges = 0; drag.c = c; drag.start_x = x; drag.start_y = y;
         drag.ox = c->x; drag.oy = c->y; drag.ow = c->w; drag.oh = c->h;
+        grab_drag_pointer(c, e->time);
         return;
     }
     if (ry < TITLE_H && e->button == Button3) {
@@ -1742,14 +1983,68 @@ static void on_button(XButtonEvent *e)
     /* bottom-right resize grip */
     if (e->button == Button1 && rx >= frame_w(c) - 18 && ry >= frame_h(c) - 18 &&
         !c->maximized && !c->fullscreen) {
-        drag.kind = 2; drag.c = c; drag.start_x = x; drag.start_y = y;
+        drag.kind = 2; drag.edges = 2 | 8; drag.c = c; drag.start_x = x; drag.start_y = y;
         drag.ox = c->x; drag.oy = c->y; drag.ow = c->w; drag.oh = c->h;
+        grab_drag_pointer(c, e->time);
     }
 }
 
 static void on_motion(XMotionEvent *e)
 {
-    if (!drag.kind) return;
+    if (!drag.kind) {
+        /* Hover tracking: nothing anywhere highlighted under the pointer,
+         * which made the whole desktop feel unresponsive. Each surface
+         * remembers what is hovered and repaints only when it changes. */
+        if (menu_kind != MENU_NONE && e->window == menu_win) {
+            int idx = (e->y - 3) / 24;
+            if (idx < 0 || idx >= menu_n) idx = -1;
+            if (idx != menu_hover) { menu_hover = idx; draw_menu(); }
+        } else if (e->window == root) {
+            int hit = -1;
+            for (int i = 0; i < npins; i++) {
+                int ix, iy; icon_rect(i, &ix, &iy);
+                if (e->x_root >= ix && e->x_root < ix + 80 &&
+                    e->y_root >= iy && e->y_root < iy + 88) hit = i;
+            }
+            if (hit != desk_hover) { desk_hover = hit; draw_desktop(); }
+        } else if (e->window == bar_win) {
+            int h = -1;
+            if (e->y >= 6 && e->y < bar_h - 6) {
+                if (e->x >= 8 && e->x < 42) h = -2;
+                else if (e->x >= 48 && e->x < 158) h = -3;
+                else if (e->x >= bar_power_x() && e->x < bar_power_x() + 34) h = -4;
+                else {
+                    bar_layout();
+                    for (int i = 0; i < bar_n; i++)
+                        if (e->x >= bar_items[i].x && e->x < bar_items[i].x + bar_items[i].w) h = i;
+                }
+            }
+            if (h != bar_hover) { bar_hover = h; draw_bar(); }
+        } else if (launch_open && e->window == launch_win) {
+            int n = launch_rebuild();
+            int idx = launch_offset + (e->y - 53) / 24;
+            if (idx >= 0 && idx < n && idx != launch_sel) {
+                launch_sel = idx;
+                draw_launcher();
+            }
+        } else {
+            struct client *c = find_client(e->window);
+            if (c && e->window == c->frame) {
+                int b = title_button_at(c, e->x, e->y);
+                if (c != hover_frame_client || b != hover_title_btn) {
+                    struct client *old = hover_frame_client;
+                    hover_frame_client = c; hover_title_btn = b;
+                    if (old && old != c) draw_frame(old);
+                    draw_frame(c);
+                }
+            } else if (hover_frame_client) {
+                struct client *old = hover_frame_client;
+                hover_frame_client = NULL; hover_title_btn = -1;
+                draw_frame(old);
+            }
+        }
+        return;
+    }
     if (drag.kind == 3) {
         drag.band_x = e->x_root; drag.band_y = e->y_root;
         return;
@@ -1765,9 +2060,17 @@ static void on_motion(XMotionEvent *e)
         if (c->y < wy) c->y = wy;
         client_place(c);
     } else if (drag.kind == 2) {             /* resize */
-        int nw = drag.ow + (e->x_root - drag.start_x);
-        int nh = drag.oh + (e->y_root - drag.start_y);
+        int dx = e->x_root - drag.start_x;
+        int dy = e->y_root - drag.start_y;
+        int nw = drag.ow, nh = drag.oh;
+        if (drag.edges & 2) nw = drag.ow + dx;
+        if (drag.edges & 8) nh = drag.oh + dy;
+        if (drag.edges & 1) nw = drag.ow - dx;
+        if (drag.edges & 4) nh = drag.oh - dy;
         client_apply_hints(c, &nw, &nh);
+        /* left/top edges keep the opposite edge fixed */
+        if (drag.edges & 1) c->x = drag.ox + (drag.ow - nw);
+        if (drag.edges & 4) c->y = drag.oy + (drag.oh - nh);
         c->w = nw; c->h = nh;
         client_place(c);
     }
@@ -1961,15 +2264,37 @@ static void apply_palette(void)
     PX.dark = alloc_rgb(0x000000);
 }
 
+/* Use the user's themed left_ptr on the desktop and WM chrome. The WM
+ * never defined a cursor anywhere, so the root kept the bare X default
+ * while applications showed their toolkit's themed cursor — two
+ * different pointers on one desktop. libXcursor is loaded at runtime so
+ * the WM keeps its libX11-only link line; without it we fall back to
+ * the core font cursor. */
+typedef Cursor (*xcursor_load_fn)(Display *, const char *);
+static void setup_cursor(void)
+{
+    void *h = dlopen("libXcursor.so.1", RTLD_NOW | RTLD_LOCAL);
+    if (!h) h = dlopen("libXcursor.so", RTLD_NOW | RTLD_LOCAL);
+    if (h) {
+        xcursor_load_fn load = (xcursor_load_fn)dlsym(h, "XcursorLibraryLoadCursor");
+        if (load) wm_cursor = load(dpy, "left_ptr");
+    }
+    if (!wm_cursor) wm_cursor = XCreateFontCursor(dpy, XC_left_ptr);
+    if (wm_cursor) XDefineCursor(dpy, root, wm_cursor);
+}
+
 static void create_ui_windows(void)
 {
     XSetWindowAttributes at;
     at.override_redirect = True;
     at.background_pixel = PX.taskbar_bg;
-    at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
+    if (wm_cursor) at.cursor = wm_cursor;
+    at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
+                    PointerMotionMask | LeaveWindowMask;
     bar_win = XCreateWindow(dpy, root, 0, screen_h - bar_h, screen_w, bar_h, 0,
                             CopyFromParent, InputOutput, CopyFromParent,
-                            CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+                            CWBackPixel | CWEventMask | CWOverrideRedirect |
+                            (wm_cursor ? CWCursor : 0), &at);
     XChangeProperty(dpy, bar_win, atoms[A_NET_WM_WINDOW_TYPE], XA_ATOM, 32,
                     PropModeReplace, (unsigned char *)&atoms[A_NET_WM_WINDOW_TYPE_DOCK], 1);
     long strut[12] = { 0 };
@@ -1980,16 +2305,20 @@ static void create_ui_windows(void)
     XMapWindow(dpy, bar_win);
 
     at.background_pixel = PX.win_bg;
-    at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
+    at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
+                    PointerMotionMask | LeaveWindowMask;
     launch_win = XCreateWindow(dpy, root, 8, screen_h - bar_h - 312, 300, 308, 0,
                                CopyFromParent, InputOutput, CopyFromParent,
-                               CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+                               CWBackPixel | CWEventMask | CWOverrideRedirect |
+                               (wm_cursor ? CWCursor : 0), &at);
     menu_win = XCreateWindow(dpy, root, 100, 100, 190, 100, 0,
                              CopyFromParent, InputOutput, CopyFromParent,
-                             CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+                             CWBackPixel | CWEventMask | CWOverrideRedirect |
+                             (wm_cursor ? CWCursor : 0), &at);
     tool_win = XCreateWindow(dpy, root, 100, 100, TOOL_W, TOOL_H, 0,
                              CopyFromParent, InputOutput, CopyFromParent,
-                             CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+                             CWBackPixel | CWEventMask | CWOverrideRedirect |
+                             (wm_cursor ? CWCursor : 0), &at);
 }
 
 
@@ -2458,7 +2787,7 @@ int main(int argc, char **argv)
         XSetErrorHandler(wm_conflict_error);
         XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask |
                      StructureNotifyMask | ButtonPressMask | PropertyChangeMask |
-                     ExposureMask);
+                     PointerMotionMask | LeaveWindowMask | ExposureMask);
         XSync(dpy, False);
         XSetErrorHandler(xerror);
         if (wm_conflict) die("another window manager is already running");
@@ -2477,6 +2806,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < A_COUNT; i++) atoms[i] = XInternAtom(dpy, atom_names[i], False);
 
     apply_palette();
+    setup_cursor();
 
     /* _NET support handshake */
     wmcheck = XCreateSimpleWindow(dpy, root, 0, 0, 1, 1, 0, 0, 0);
@@ -2665,6 +2995,21 @@ int main(int argc, char **argv)
             case ButtonPress: case ButtonRelease:
                 on_button(&ev.xbutton);
                 break;
+            case LeaveNotify: {
+                Window lw = ev.xcrossing.window;
+                if (lw == root) {
+                    if (desk_hover != -1) { desk_hover = -1; draw_desktop(); }
+                } else if (lw == bar_win) {
+                    if (bar_hover != -1) { bar_hover = -1; draw_bar(); }
+                    if (bar_press != -1) { bar_press = -1; draw_bar(); }
+                } else if (lw == menu_win) {
+                    if (menu_hover != -1) { menu_hover = -1; draw_menu(); }
+                } else if (hover_frame_client && lw == hover_frame_client->frame) {
+                    struct client *old = hover_frame_client;
+                    hover_frame_client = NULL; hover_title_btn = -1;
+                    draw_frame(old);
+                }
+                break; }
             case MotionNotify: {
                 /* compress motion */
                 XEvent next;

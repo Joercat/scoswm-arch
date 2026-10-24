@@ -4,8 +4,8 @@
 
 CC      ?= cc
 CFLAGS  ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.4.3"'
-LDLIBS   = -lX11 -lz
+CPPFLAGS += -DVERSION='"0.4.4"'
+LDLIBS   = -lX11 -lz -ldl
 PREFIX  ?= /usr
 DESTDIR ?=
 

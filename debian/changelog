@@ -1,3 +1,26 @@
+scoswm (0.4.4) unstable; urgency=medium
+
+  * Fix the desktop wallpaper pixmap: the gradient and grid were still
+    painted onto the root window and then covered by the pixmap copy,
+    which hid the grid lines and kept the desktop flickering.
+  * Make the mouse wheel work on WM surfaces: it scrolls the launcher
+    list (previously the offset snapped back to the selection) and
+    cycles windows on the desktop and taskbar.
+  * Add hover highlighting on desktop icons, taskbar items and window
+    title buttons, pressed/starting feedback on taskbar pins, and
+    clear a desktop icon's selection as soon as empty desktop is
+    clicked.
+  * Define the themed arrow cursor on the root window, WM chrome and
+    window frames so the pointer no longer changes style between
+    applications and the desktop.
+  * Reachable resize zones on every window edge and corner (from the
+    client area too, not just the 1 px frame), and dragging a
+    maximised window's titlebar restores it under the pointer.
+  * Short minimise/restore transitions so windows no longer appear
+    and vanish instantaneously.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 -0400
+
 scoswm (0.4.3) unstable; urgency=medium
 
   * Fix leaked drag state: a button release now ends any drag wherever
