@@ -114,7 +114,7 @@ int main(void)
     CHECK(load == 0.25 && procs == 345);
 
     /* .desktop parsing */
-    snprintf(path, sizeof(path), "%s/foo.desktop", dir);
+    snprintf(path, sizeof(path), "%.490s/foo.desktop", dir);
     write_file(path,
         "[Desktop Entry]\n"
         "Type=Application\n"
@@ -144,13 +144,13 @@ int main(void)
     CHECK(!strcmp(out, "env FOO=1 app"));
 
     /* directory scan dedups by id, first dir wins, sorts by name */
-    char sub[512];
+    char sub[1024];
     snprintf(sub, sizeof(sub), "%s/apps2", dir);
     mkdir(sub, 0755);
-    char p2[512];
-    snprintf(p2, sizeof(p2), "%s/foo.desktop", sub);
+    char p2[1024];
+    snprintf(p2, sizeof(p2), "%.1000s/foo.desktop", sub);
     write_file(p2, "[Desktop Entry]\nType=Application\nName=ZZZ Duplicate\nExec=fooedit2\n");
-    snprintf(p2, sizeof(p2), "%s/bar.desktop", sub);
+    snprintf(p2, sizeof(p2), "%.1000s/bar.desktop", sub);
     write_file(p2, "[Desktop Entry]\nType=Application\nName=Aardvark\nExec=bar\n");
     const char *dirs[] = { dir, sub };
     struct desktop_app found[16];
@@ -180,12 +180,12 @@ int main(void)
         static const unsigned char png_bytes[] = {
             137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,36,0,0,0,21,73,68,65,84,120,156,99,248,207,240,31,136,64,16,8,24,24,254,55,0,0,96,50,10,119,93,233,27,79,0,0,0,0,73,69,78,68,174,66,96,130
         };
-        char icons[512], theme_dir[512], size_dir[512], app_dir[512], png_path[512];
+        char icons[1024], theme_dir[1024], size_dir[1024], app_dir[1024], png_path[1024];
         snprintf(icons, sizeof(icons), "%s/icons", dir); mkdir(icons, 0755);
-        snprintf(theme_dir, sizeof(theme_dir), "%s/hicolor", icons); mkdir(theme_dir, 0755);
-        snprintf(size_dir, sizeof(size_dir), "%s/24x24", theme_dir); mkdir(size_dir, 0755);
-        snprintf(app_dir, sizeof(app_dir), "%s/apps", size_dir); mkdir(app_dir, 0755);
-        snprintf(png_path, sizeof(png_path), "%s/testapp.png", app_dir);
+        snprintf(theme_dir, sizeof(theme_dir), "%.1000s/hicolor", icons); mkdir(theme_dir, 0755);
+        snprintf(size_dir, sizeof(size_dir), "%.1000s/24x24", theme_dir); mkdir(size_dir, 0755);
+        snprintf(app_dir, sizeof(app_dir), "%.1000s/apps", size_dir); mkdir(app_dir, 0755);
+        snprintf(png_path, sizeof(png_path), "%.1000s/testapp.png", app_dir);
         FILE *pf = fopen(png_path, "wb"); CHECK(pf != NULL);
         if (pf) { fwrite(png_bytes, 1, sizeof(png_bytes), pf); fclose(pf); }
         const char *roots[] = { icons };
@@ -200,8 +200,8 @@ int main(void)
         CHECK(rgba_image_scale_fit(&img, 1, 1) && img.w == 1 && img.h == 1);
         rgba_image_free(&img);
 
-        char xpm_path[512];
-        snprintf(xpm_path, sizeof(xpm_path), "%s/testapp.xpm", app_dir);
+        char xpm_path[1024];
+        snprintf(xpm_path, sizeof(xpm_path), "%.1000s/testapp.xpm", app_dir);
         write_file(xpm_path,
             "/* XPM */\nstatic char *x[] = {\n\"2 2 2 1\",\n\"r c #FF0000\",\n\". c None\",\n\"r.\",\".r\"};\n");
         CHECK(rgba_image_load(xpm_path, &img));

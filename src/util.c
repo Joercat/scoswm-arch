@@ -218,7 +218,7 @@ int desktop_scan(const char *const *dirs, int ndirs, struct desktop_app *out, in
             const char *name = e->d_name;
             size_t len = strlen(name);
             if (len < 9 || strcmp(name + len - 8, ".desktop")) continue;
-            char path[1024];
+            char path[4096];
             snprintf(path, sizeof(path), "%s/%s", dirs[d], name);
             struct desktop_app app;
             if (!desktop_parse_file(path, &app)) continue;
@@ -689,6 +689,17 @@ static int try_icon_file(const char *path, char *out, int cap)
     return 0;
 }
 
+
+/* Append s to out (current length *len, capacity cap); 0 if too long. */
+static int append_str(char *out, size_t cap, size_t *len, const char *s)
+{
+    size_t n = strlen(s);
+    if (*len + n >= cap) return 0;
+    memcpy(out + *len, s, n + 1);
+    *len += n;
+    return 1;
+}
+
 int icon_resolve_in(const char *icon, const char *const *roots, int nroots,
                     int preferred_size, char *out, int cap)
 {
@@ -718,26 +729,29 @@ int icon_resolve_in(const char *icon, const char *const *roots, int nroots,
         if (!rootp || !*rootp) continue;
         const char *base_name = strrchr(rootp, '/');
         base_name = base_name ? base_name + 1 : rootp;
-        char path[1024];
+        char path[4096];
         if (!strcmp(base_name, "pixmaps")) {
             for (int e = 0; exts[e]; e++) {
-                if (has_ext) snprintf(path, sizeof(path), "%s/%s", rootp, name);
-                else snprintf(path, sizeof(path), "%s/%s%s", rootp, name, exts[e]);
-                if (file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
+                size_t len = 0; path[0] = 0;
+                if (append_str(path, sizeof(path), &len, rootp) &&
+                    append_str(path, sizeof(path), &len, "/") &&
+                    append_str(path, sizeof(path), &len, name) &&
+                    (has_ext || append_str(path, sizeof(path), &len, exts[e])) &&
+                    file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
                 if (has_ext) break;
             }
             continue;
         }
         /* Theme roots: hicolor first, then any sibling theme dirs. */
-        char themes[64][96];
+        char themes[64][256];
         int nthemes = 0;
-        snprintf(themes[nthemes++], 96, "hicolor");
+        snprintf(themes[nthemes++], sizeof(themes[0]), "hicolor");
         DIR *d = opendir(rootp);
         if (d) {
             struct dirent *entry;
             while ((entry = readdir(d)) != NULL && nthemes < 64) {
                 if (entry->d_name[0] == '.' || !strcmp(entry->d_name, "hicolor")) continue;
-                snprintf(themes[nthemes++], 96, "%s", entry->d_name);
+                snprintf(themes[nthemes++], sizeof(themes[0]), "%s", entry->d_name);
             }
             closedir(d);
         }
@@ -745,18 +759,36 @@ int icon_resolve_in(const char *icon, const char *const *roots, int nroots,
             for (int si = 0; si < nsizes; si++) {
                 for (int ci = 0; contexts[ci]; ci++) {
                     for (int e = 0; exts[e]; e++) {
-                        if (has_ext) snprintf(path, sizeof(path), "%s/%s/%dx%d/%s/%s", rootp, themes[t], sizes[si], sizes[si], contexts[ci], name);
-                        else snprintf(path, sizeof(path), "%s/%s/%dx%d/%s/%s%s", rootp, themes[t], sizes[si], sizes[si], contexts[ci], name, exts[e]);
-                        if (file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
+                        char sizedir[32];
+                        snprintf(sizedir, sizeof(sizedir), "%dx%d", sizes[si], sizes[si]);
+                        size_t len = 0; path[0] = 0;
+                        if (append_str(path, sizeof(path), &len, rootp) &&
+                            append_str(path, sizeof(path), &len, "/") &&
+                            append_str(path, sizeof(path), &len, themes[t]) &&
+                            append_str(path, sizeof(path), &len, "/") &&
+                            append_str(path, sizeof(path), &len, sizedir) &&
+                            append_str(path, sizeof(path), &len, "/") &&
+                            append_str(path, sizeof(path), &len, contexts[ci]) &&
+                            append_str(path, sizeof(path), &len, "/") &&
+                            append_str(path, sizeof(path), &len, name) &&
+                            (has_ext || append_str(path, sizeof(path), &len, exts[e])) &&
+                            file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
                         if (has_ext) break;
                     }
                 }
             }
             for (int ci = 0; contexts[ci]; ci++) {
                 for (int e = 0; exts[e]; e++) {
-                    if (has_ext) snprintf(path, sizeof(path), "%s/%s/scalable/%s/%s", rootp, themes[t], contexts[ci], name);
-                    else snprintf(path, sizeof(path), "%s/%s/scalable/%s/%s%s", rootp, themes[t], contexts[ci], name, exts[e]);
-                    if (has_supported_ext(path) && file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
+                    size_t len = 0; path[0] = 0;
+                    if (append_str(path, sizeof(path), &len, rootp) &&
+                        append_str(path, sizeof(path), &len, "/") &&
+                        append_str(path, sizeof(path), &len, themes[t]) &&
+                        append_str(path, sizeof(path), &len, "/scalable/") &&
+                        append_str(path, sizeof(path), &len, contexts[ci]) &&
+                        append_str(path, sizeof(path), &len, "/") &&
+                        append_str(path, sizeof(path), &len, name) &&
+                        (has_ext || append_str(path, sizeof(path), &len, exts[e])) &&
+                        file_exists(path)) { snprintf(out, cap, "%s", path); return 1; }
                     if (has_ext) break;
                 }
             }

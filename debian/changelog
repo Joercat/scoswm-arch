@@ -1,3 +1,15 @@
+scoswm (0.4.2) unstable; urgency=medium
+
+  * Log session starts, WM messages and exit status to
+    ~/.cache/scoswm/session.log in scoswm-session, so a failed SDDM
+    login leaves a readable reason instead of a silent flash.
+  * Silence -Wformat-truncation build warnings (bounded copies) so
+    real build errors are visible; the warnings were harmless.
+  * More X core font fallbacks and a clear log line if the X server
+    connection is lost mid-session.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 -0400
+
 scoswm (0.4.1) unstable; urgency=medium
 
   * Add Debian packaging (debian/) and a quick packaging/build-deb.sh

@@ -49,7 +49,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.4.1"
+#define VERSION "0.4.2"
 #endif
 
 #define TITLE_H 26
@@ -156,6 +156,14 @@ static int wm_conflict_error(Display *d, XErrorEvent *e)
     (void)d;
     if (e->error_code == BadAccess) wm_conflict = 1;
     return 0;
+}
+
+static int xioerror(Display *d)
+{
+    (void)d;
+    fprintf(stderr, "scoswm: connection to the X server was lost, exiting\n");
+    fflush(stderr);
+    _exit(1);
 }
 
 static int xerror(Display *d, XErrorEvent *e)
@@ -1044,7 +1052,7 @@ static int client_desktop_app(struct client *c)
     for (char *tok = strtok(classbuf, " \t-._"); tok; tok = strtok(NULL, " \t-._")) {
         if (strlen(tok) < 2) continue;
         for (int i = 0; i < napps; i++) {
-            char execbase[128];
+            char execbase[512];
             app_exec_basename(&apps[i], execbase, sizeof(execbase));
             int score = 0;
             if (!strcasecmp(tok, apps[i].id)) score = 100;
@@ -1510,7 +1518,7 @@ static void on_button(XButtonEvent *e)
             menu_n = nclients > 8 ? 8 : nclients;
             for (int i = 0; i < menu_n; i++) {
                 struct client *c = clients[nclients - 1 - i];
-                snprintf(menu_labels[i], 64, "%s %s", c->minimized ? "[-]" :
+                snprintf(menu_labels[i], 64, "%s %.55s", c->minimized ? "[-]" :
                          (active_client == c ? "[+]" : "   "), c->title);
             }
             menu_x = 48; menu_y = screen_h - bar_h - (menu_n * 24 + 8);
@@ -1823,7 +1831,7 @@ static void build_pins(void)
             for (int i = 0; i < napps; i++)
                 if (ci_contains(apps[i].id, tok) || ci_contains(apps[i].name, tok)) { found = i; break; }
         if (found >= 0) {
-            char cmd[1024];
+            char cmd[512];
             launch_cmd_for(&apps[found], cmd, sizeof(cmd));
             snprintf(p->command, sizeof(p->command), "%s", cmd);
             snprintf(p->label, sizeof(p->label), "%s", apps[found].name);
@@ -1952,7 +1960,7 @@ static void save_settings(const char *what)
     if (config_save_file(config_path, &cfg))
         snprintf(settings_status, sizeof(settings_status), "%s saved", what);
     else
-        snprintf(settings_status, sizeof(settings_status), "Could not save %s", config_path);
+        snprintf(settings_status, sizeof(settings_status), "Could not save %.140s", config_path);
 }
 
 static void redraw_everything(void)
@@ -2072,7 +2080,7 @@ static void detect_gpu_info(void)
             return;
         }
         if (!sysmon_state.gpu[0])
-            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU driver: %s (card%d)", driver, card);
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU driver: %.230s (card%d)", driver, card);
     }
     if (sysmon_state.gpu[0]) return;
     snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU: no DRM driver exposed in /sys");
@@ -2362,6 +2370,7 @@ int main(int argc, char **argv)
     dpy = XOpenDisplay(NULL);
     if (!dpy) die("cannot open display (is an X server running? Wayland-only sessions need XWayland)");
     fcntl(ConnectionNumber(dpy), F_SETFD, FD_CLOEXEC);
+    XSetIOErrorHandler(xioerror);
     scr_no = DefaultScreen(dpy);
     root = RootWindow(dpy, scr_no);
     screen_w = DisplayWidth(dpy, scr_no);
@@ -2383,8 +2392,10 @@ int main(int argc, char **argv)
     if (cfg.font[0]) font = XLoadQueryFont(dpy, cfg.font);
     if (!font) font = XLoadQueryFont(dpy, "-misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1");
     if (!font) font = XLoadQueryFont(dpy, "-misc-fixed-medium-r-semicondensed--13-120-75-75-c-60-iso8859-1");
+    if (!font) font = XLoadQueryFont(dpy, "9x15");
+    if (!font) font = XLoadQueryFont(dpy, "10x20");
     if (!font) font = XLoadQueryFont(dpy, "fixed");
-    if (!font) die("no usable core font found");
+    if (!font) die("no usable X core font found (is xfonts-base installed and in the X server font path?)");
     gc = XCreateGC(dpy, root, 0, NULL);
     XSetFont(dpy, gc, font->fid);
 

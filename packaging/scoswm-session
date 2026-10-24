@@ -3,8 +3,29 @@
 # scoswm is a plain X11 window manager; run it from a display manager
 # (packaging/scoswm.desktop, picked up by SDDM from
 # /usr/share/xsessions) or from ~/.xinitrc with `exec scoswm-session`.
+#
+# Everything the WM prints - including why it exited, if it does - is
+# appended to ~/.cache/scoswm/session.log, because display managers
+# otherwise swallow session output. Check there first if a login
+# attempt drops you straight back to the greeter.
 export XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-x11}
 export XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-SCosWM}
 export DESKTOP_SESSION=${DESKTOP_SESSION:-scoswm}
+
+log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/scoswm
+log_file=
+if mkdir -p "$log_dir" 2>/dev/null; then
+    log_file=$log_dir/session.log
+fi
+
 [ -x "$HOME/.config/scoswm/autostart.sh" ] && "$HOME/.config/scoswm/autostart.sh" &
+
+if [ -n "$log_file" ]; then
+    echo "=== scoswm session started $(date '+%Y-%m-%d %H:%M:%S') (DISPLAY=$DISPLAY) ===" >> "$log_file"
+    scoswm "$@" >> "$log_file" 2>&1
+    rc=$?
+    echo "=== scoswm exited with status $rc $(date '+%Y-%m-%d %H:%M:%S') ===" >> "$log_file"
+    exit "$rc"
+fi
+
 exec scoswm "$@"

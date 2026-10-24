@@ -90,6 +90,26 @@ Verify the session is registered with:
 grep -H '^Name=\|^Exec=\|^TryExec=' /usr/share/xsessions/scoswm.desktop
 ```
 
+### Troubleshooting a failed SDDM login
+
+If selecting SCosWM flashes and drops you back to the greeter, the WM
+exited during startup and logged why. Check, in order:
+
+```sh
+cat ~/.cache/scoswm/session.log          # scoswm's own messages + exit status
+cat ~/.local/share/sddm/xorg-session.log # SDDM/Xorg side of the attempt
+which Xorg                               # an X11 session needs an X server
+```
+
+The usual causes are a missing Xorg (`sudo apt install
+xserver-xorg-core`, plus your GPU's Xorg driver, e.g.
+`xserver-xorg-video-nvidia` on proprietary NVIDIA), missing core fonts
+(`xfonts-base`, a hard dependency of the `.deb`), or another window
+manager already owning the display. To isolate SDDM entirely, switch
+to a TTY (`Ctrl+Alt+F3`), log in, and run
+`startx /usr/bin/scoswm-session` — startup errors then print directly
+on that console.
+
 Then pick **SCosWM** in your display manager, or from a TTY:
 
 ```sh
