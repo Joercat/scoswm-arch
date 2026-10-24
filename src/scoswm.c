@@ -49,7 +49,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.4.2"
+#define VERSION "0.4.3"
 #endif
 
 #define TITLE_H 26
@@ -129,7 +129,7 @@ static struct client **clients;
 static int nclients, clients_cap;
 static struct client *active_client;
 
-static struct desktop_app apps[512];
+static struct desktop_app apps[1024];
 static int napps;
 
 enum core_action { CORE_NONE, CORE_TERMINAL, CORE_FILES, CORE_SYSMON, CORE_SETTINGS };
@@ -527,6 +527,15 @@ static void close_client(struct client *c)
     else XKillClient(dpy, c->win);
 }
 
+static struct {
+    int kind;               /* 0 none 1 move 2 resize 3 desktop-band */
+    struct client *c;
+    int start_x, start_y;   /* pointer at grab */
+    int ox, oy, ow, oh;     /* frame/client geometry at grab */
+    int moved;
+    int band_x, band_y, band_drawn;
+} drag;
+
 static void remove_client(struct client *c, int reparent)
 {
     int idx = -1;
@@ -538,6 +547,7 @@ static void remove_client(struct client *c, int reparent)
         XRemoveFromSaveSet(dpy, c->win);
         XUngrabServer(dpy);
     }
+    if (drag.c == c) { drag.kind = 0; drag.c = NULL; }
     XDestroyWindow(dpy, c->frame);
     xicon_destroy_owned(c->icon);
     memmove(&clients[idx], &clients[idx + 1], (nclients - idx - 1) * sizeof(*clients));
@@ -711,11 +721,12 @@ static void update_ewmh_client_list(void)
  * the four SCos core apps and the user's pins. Typing a search term is
  * the deliberate escape hatch that also searches installed .desktop
  * applications, so hundreds of utilities do not clutter daily use. */
-static int launch_open, launch_offset, launch_sel, launch_pin_mode;
+static int launch_open, launch_offset, launch_sel, launch_pin_mode, launch_all;
+#define ACTION_ALLAPPS (-1)   /* pseudo-item: switch to browsing all apps */
 static char launch_q[64];
 
 struct launch_item { char name[128]; char glyph[4]; char icon[160]; char app_id[96]; char command[1024]; int action; int app_idx; };
-static struct launch_item launch_items[1056];
+static struct launch_item launch_items[2100];
 static int launch_nitems;
 
 static const struct { const char *name, *glyph, *icon, *keywords; int action; } core_apps[] = {
@@ -811,10 +822,14 @@ static int launch_rebuild(void)
         }
     }
 
-    /* Installed applications appear only after the user starts typing. */
-    if (searching) {
+    /* Installed applications: shown while searching, or all of them
+     * in "All Apps" browse mode; the curated default view instead
+     * ends with an entry that switches to browsing. */
+    if (!searching && !launch_all && napps > 0)
+        launch_add("All installed apps...", ">>", "", "", ACTION_ALLAPPS, -1);
+    if (searching || launch_all) {
         for (int i = 0; i < napps; i++) {
-            if (!ci_contains(apps[i].name, launch_q) && !ci_contains(apps[i].exec, launch_q)) continue;
+            if (searching && !ci_contains(apps[i].name, launch_q) && !ci_contains(apps[i].exec, launch_q)) continue;
             char cmd[1024];
             launch_cmd_for(&apps[i], cmd, sizeof(cmd));
             char glyph[4] = { apps[i].name[0] ? apps[i].name[0] : 'A', 0 };
@@ -1126,7 +1141,7 @@ static void icon_rect(int i, int *x, int *y)
     *y = 16 + (i / 8) * DESK_ROW_H;
 }
 
-static void draw_desktop(void)
+static void paint_desktop(Drawable d)
 {
     /* Painted straight onto the root window (Expose events repaint it)
      * rather than via a background pixmap, so the desktop also works
@@ -1145,21 +1160,48 @@ static void draw_desktop(void)
     for (int i = 0; i < npins; i++) {
         int x, y; icon_rect(i, &x, &y);
         if (desk_sel_mask & (1ul << i)) {
-            fill(root, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 30)));
-            rect(root, x, y, 80, 88, PX.main);
+            fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 30)));
+            rect(d, x, y, 80, 88, PX.main);
         }
         /* proper freedesktop image at the normal 24x24 SCos size;
          * the framed letter glyph remains only as a fallback */
         int gx = x + 28, gy = y + 8;
         struct xicon *xi = xicon_get(pins[i].icon, 24);
         if (xicon_drawn(xi)) {
-            draw_xicon(root, xi, gx + (24 - xi->w) / 2, gy + (24 - xi->h) / 2);
+            draw_xicon(d, xi, gx + (24 - xi->w) / 2, gy + (24 - xi->h) / 2);
         } else {
-            rect(root, gx, gy, 24, 24, PX.main);
+            rect(d, gx, gy, 24, 24, PX.main);
             int gw = text_w(pins[i].glyph);
-            text_out(root, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
+            text_out(d, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
         }
-        clipped_text(root, x + 4, y + 40 + font->ascent, pins[i].label, 72, PX.text);
+        clipped_text(d, x + 4, y + 40 + font->ascent, pins[i].label, 72, PX.text);
+    }
+}
+
+static Pixmap desk_pm = None;
+static int desk_pm_w, desk_pm_h;
+
+/* Paint the wallpaper into a pixmap and install it as the root
+ * background, so the X server itself restores the desktop instantly
+ * when windows move or close. Painting straight onto the root (the
+ * old way) left ghost images of closed windows until an Expose
+ * repaint crawled down the screen, and flickered while doing it. */
+static void draw_desktop(void)
+{
+    if (desk_pm && (desk_pm_w != screen_w || desk_pm_h != screen_h)) {
+        XFreePixmap(dpy, desk_pm);
+        desk_pm = None;
+    }
+    if (!desk_pm) {
+        desk_pm = XCreatePixmap(dpy, root, screen_w, screen_h, DefaultDepth(dpy, scr_no));
+        desk_pm_w = screen_w; desk_pm_h = screen_h;
+    }
+    if (desk_pm) {
+        paint_desktop(desk_pm);
+        XSetWindowBackgroundPixmap(dpy, root, desk_pm);
+        XCopyArea(dpy, desk_pm, root, gc, 0, 0, screen_w, screen_h, 0, 0);
+    } else {
+        paint_desktop(root);
     }
 }
 
@@ -1285,7 +1327,7 @@ static void draw_launcher(void)
     XMoveResizeWindow(dpy, launch_win, 8, y, 300, h);
     fill(launch_win, 0, 0, 300, h, PX.win_bg);
     rect(launch_win, 0, 0, 300, h, PX.main);
-    text_out(launch_win, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
+    text_out(launch_win, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_all && !launch_q[0] ? "All installed apps - Esc goes back" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
     rect(launch_win, 10, 26, 280, 20, PX.main);
     text_out(launch_win, 14, 30 + font->ascent, launch_q, PX.text);
     int caret_x = 14 + text_w(launch_q);
@@ -1314,7 +1356,7 @@ static void draw_launcher(void)
 static void launcher_toggle(int open)
 {
     if (open && !launch_open) {
-        launch_q[0] = 0; launch_offset = 0; launch_sel = 0;
+        launch_q[0] = 0; launch_offset = 0; launch_sel = 0; launch_all = 0;
         launch_rebuild();
         XMapWindow(dpy, launch_win);
         launch_open = 1;
@@ -1393,15 +1435,6 @@ static void wm_notify_no_windows(void)
 }
 
 /* ------------------------------------------------------------- interaction */
-static struct {
-    int kind;               /* 0 none 1 move 2 resize 3 desktop-band */
-    struct client *c;
-    int start_x, start_y;   /* pointer at grab */
-    int ox, oy, ow, oh;     /* frame/client geometry at grab */
-    int moved;
-    int band_x, band_y, band_drawn;
-} drag;
-
 static struct { unsigned int button; int x, y; unsigned long t; int icon; } last_click;
 
 static int title_button_at(struct client *c, int rx, int ry)
@@ -1508,6 +1541,35 @@ static void on_button(XButtonEvent *e)
     }
     if (launch_open && w != launch_win && w != bar_win) launcher_toggle(0);
 
+    /* A button release ends any drag, wherever the pointer happens to
+     * be. Finalizing only on the dragged window leaked the drag state
+     * whenever the release landed on another window, the taskbar or a
+     * menu: the window stayed glued to the pointer, and desktop
+     * repaints (suppressed mid-drag) never resumed, so closed windows
+     * left ghost frames on the desktop. */
+    if (e->type == ButtonRelease && drag.kind) {
+        if (drag.kind == 3) {
+            drag.band_x = x; drag.band_y = y;
+            desk_sel_mask = 0;
+            int bx = drag.start_x < drag.band_x ? drag.start_x : drag.band_x;
+            int byy = drag.start_y < drag.band_y ? drag.start_y : drag.band_y;
+            int bx2 = drag.start_x > drag.band_x ? drag.start_x : drag.band_x;
+            int by2 = drag.start_y > drag.band_y ? drag.start_y : drag.band_y;
+            for (int i = 0; i < npins; i++) {
+                int ix, iy; icon_rect(i, &ix, &iy);
+                if (ix < bx2 && ix + 80 > bx && iy < by2 && iy + 88 > byy)
+                    desk_sel_mask |= 1ul << i;
+            }
+            drag.kind = 0;
+        } else {
+            struct client *dc = drag.c;
+            drag.kind = 0; drag.c = NULL;
+            if (dc && find_client(dc->win) == dc) draw_frame(dc);
+        }
+        draw_desktop();
+        return;
+    }
+
     if (w == bar_win) {
         if (e->type != ButtonPress) return;
         if (e->x >= 8 && e->x < 42 && e->y >= 6) { launcher_toggle(!launch_open); return; }
@@ -1569,6 +1631,11 @@ static void on_button(XButtonEvent *e)
         }
         if (e->button == Button1 && idx >= 0 && idx < n) {
             struct launch_item it = launch_items[idx];
+            if (it.action == ACTION_ALLAPPS) {
+                launch_all = 1; launch_sel = 0; launch_offset = 0;
+                draw_launcher();
+                return;
+            }
             launcher_toggle(0);
             launch_exec_item(&it);
         }
@@ -1718,12 +1785,20 @@ static void on_key(XKeyEvent *e)
     }
     if (launch_open) {
         int n = launch_rebuild();
-        if (ks == XK_Escape) launcher_toggle(0);
+        if (ks == XK_Escape) {
+            if (launch_all && !launch_q[0]) { launch_all = 0; launch_sel = 0; launch_offset = 0; draw_launcher(); }
+            else launcher_toggle(0);
+        }
         else if (ks == XK_Return) {
             if (n > 0) {
                 struct launch_item it = launch_items[launch_sel];
-                launcher_toggle(0);
-                launch_exec_item(&it);
+                if (it.action == ACTION_ALLAPPS) {
+                    launch_all = 1; launch_sel = 0; launch_offset = 0;
+                    draw_launcher();
+                } else {
+                    launcher_toggle(0);
+                    launch_exec_item(&it);
+                }
             }
         }
         else if (ks == XK_Down) { if (launch_sel < n - 1) launch_sel++; draw_launcher(); }
@@ -2427,13 +2502,43 @@ int main(int argc, char **argv)
     XChangeProperty(dpy, root, atoms[A_NET_CURRENT_DESKTOP], XA_CARDINAL, 32,
                     PropModeReplace, (unsigned char *)&zero, 1);
 
-    /* application discovery for launcher + pins */
+    /* Application discovery for launcher + pins: the standard XDG
+     * data dirs, plus Flatpak and Snap export dirs, whose apps are
+     * invisible if only /usr/share/applications is scanned. */
     {
-        const char *home = getenv("HOME");
-        char local[512];
-        snprintf(local, sizeof(local), "%s/.local/share/applications", home ? home : "");
-        const char *dirs[] = { local, "/usr/local/share/applications", "/usr/share/applications" };
-        napps = desktop_scan(dirs, 3, apps, 512);
+        const char *home = getenv("HOME") ? getenv("HOME") : "";
+        static char dirbuf[24][640];
+        const char *dirs[24];
+        int ndirs = 0;
+        const char *xdg_home = getenv("XDG_DATA_HOME");
+        char xdg_home_buf[560];
+        if (!xdg_home || !xdg_home[0]) {
+            snprintf(xdg_home_buf, sizeof(xdg_home_buf), "%s/.local/share", home);
+            xdg_home = xdg_home_buf;
+        }
+        if (ndirs < 24) {
+            snprintf(dirbuf[ndirs], sizeof(dirbuf[0]), "%s/applications", xdg_home);
+            dirs[ndirs] = dirbuf[ndirs]; ndirs++;
+        }
+        const char *xdg_dirs = getenv("XDG_DATA_DIRS");
+        if (!xdg_dirs || !xdg_dirs[0]) xdg_dirs = "/usr/local/share:/usr/share";
+        char xd[1024];
+        snprintf(xd, sizeof(xd), "%s", xdg_dirs);
+        for (char *tok = strtok(xd, ":"); tok && ndirs < 20; tok = strtok(NULL, ":")) {
+            if (!*tok) continue;
+            snprintf(dirbuf[ndirs], sizeof(dirbuf[0]), "%s/applications", tok);
+            dirs[ndirs] = dirbuf[ndirs]; ndirs++;
+        }
+        char flat_local[640];
+        snprintf(flat_local, sizeof(flat_local), "%s/.local/share/flatpak/exports/share/applications", home);
+        const char *extra[] = { flat_local,
+            "/var/lib/flatpak/exports/share/applications",
+            "/var/lib/snapd/desktop/applications", NULL };
+        for (int i = 0; extra[i] && ndirs < 24; i++) {
+            snprintf(dirbuf[ndirs], sizeof(dirbuf[0]), "%s", extra[i]);
+            dirs[ndirs] = dirbuf[ndirs]; ndirs++;
+        }
+        napps = desktop_scan(dirs, ndirs, apps, 1024);
     }
     build_pins();
 
@@ -2571,7 +2676,7 @@ int main(int argc, char **argv)
                 break;
             case Expose:
                 if (ev.xexpose.count == 0) {
-                    if (ev.xexpose.window == root) { if (!drag.kind) draw_desktop(); }
+                    if (ev.xexpose.window == root) draw_desktop();
                     else if (ev.xexpose.window == bar_win) draw_bar();
                     else if (ev.xexpose.window == launch_win) draw_launcher();
                     else if (ev.xexpose.window == menu_win) draw_menu();

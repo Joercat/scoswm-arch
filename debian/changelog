@@ -1,3 +1,18 @@
+scoswm (0.4.3) unstable; urgency=medium
+
+  * Fix leaked drag state: a button release now ends any drag wherever
+    it lands. Releasing over another window or the taskbar previously
+    left windows glued to the pointer, suppressed desktop repaints and
+    left ghost frames of closed windows on the desktop.
+  * Paint the wallpaper into a root background pixmap so the X server
+    restores the desktop instantly when windows close/move (no more
+    split-second flicker or leftover window outlines).
+  * Discover apps in all XDG data dirs plus Flatpak and Snap export
+    directories, and add an "All installed apps..." browse mode to
+    the launcher (Esc returns to the core view).
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 21:00:00 -0400
+
 scoswm (0.4.2) unstable; urgency=medium
 
   * Log session starts, WM messages and exit status to

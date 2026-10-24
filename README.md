@@ -144,10 +144,17 @@ readable PNG/XPM icon keeps the SCos letter-glyph fallback rather than
 growing the layout.
 
 The launcher's normal view is deliberately curated to the four core
-apps plus your pins. Once you type, it also searches `.desktop` files
-from `~/.local/share/applications`, `/usr/local/share/applications`
-and `/usr/share/applications`, so Firefox, Steam, VS Code and other
-installed programs are available without cluttering the default view.
+apps plus your pins. Once you type, it searches installed apps too,
+and the **All installed apps...** entry at the bottom of the launcher
+browses everything without typing. Applications are discovered in the
+standard XDG data dirs (`~/.local/share/applications`,
+`/usr/local/share/applications`, `/usr/share/applications` and the
+rest of `XDG_DATA_DIRS`) plus the Flatpak and Snap export directories
+(`~/.local/share/flatpak/exports/share/applications`,
+`/var/lib/flatpak/exports/share/applications`,
+`/var/lib/snapd/desktop/applications`), so Firefox, Steam, VS Code,
+Flatpaks and Snaps are all available without cluttering the
+default view.
 
 ## Configuration
 
