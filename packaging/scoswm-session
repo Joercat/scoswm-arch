@@ -1,0 +1,6 @@
+#!/bin/sh
+# scoswm session: optional user autostart, then the WM itself.
+# scoswm is a plain X11 window manager; run it from a display manager
+# (packaging/scoswm.desktop) or from ~/.xinitrc with `exec scoswm-session`.
+[ -x "$HOME/.config/scoswm/autostart.sh" ] && "$HOME/.config/scoswm/autostart.sh" &
+exec scoswm "$@"

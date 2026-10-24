@@ -1,7 +1,2 @@
-/build/
 /scoswm
-/scoswm-headless
-*.ppm
-pkg/
-src/*.pkg.tar.*
-pkgbuild-src/
+/test_util

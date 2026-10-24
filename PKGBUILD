@@ -1,35 +1,31 @@
-# Unofficial packaging for the SCos window manager (Linux port).
-# This builds from a local git clone placed in ./pkgbuild-src so the
-# recipe works from a checkout of this repository:
-#
-#     git clone https://github.com/Joercat/scoswm-arch.git pkgbuild-src
-#     makepkg -si
-#
-# To package a tagged release instead, point `source` at the release
-# tarball on GitHub and drop the local-directory source line.
+# Maintainer: scoswm contributors
 pkgname=scoswm
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="The SCos window manager/desktop, ported from the SCos OS to Linux (SDL2)"
+pkgdesc="SCos-styled lightweight X11 window manager for real Linux applications"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Joercat/scoswm-arch"
-license=('custom')
-depends=('sdl2')
-makedepends=('pkgconf')
-source=("pkgbuild-src::git+file://$PWD/pkgbuild-src")
+license=('MIT')
+depends=('libx11')
+makedepends=('gcc' 'make')
+optdepends=('xorg-server: X server (Xorg or XWayland host)'
+            'xterm: fallback terminal for Super+Enter'
+            'slock: screen locker for the power menu'
+            'imagemagick: screenshot/docs tooling only')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
-    cd "$srcdir/pkgbuild-src"
-    make scoswm CFLAGS="$CFLAGS"
+    cd "$pkgname-$pkgver"
+    make
 }
 
 check() {
-    cd "$srcdir/pkgbuild-src"
+    cd "$pkgname-$pkgver"
     make check
 }
 
 package() {
-    cd "$srcdir/pkgbuild-src"
-    make install DESTDIR="$pkgdir" PREFIX=/usr
+    cd "$pkgname-$pkgver"
+    make DESTDIR="$pkgdir" PREFIX=/usr install
 }

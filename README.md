@@ -1,131 +1,119 @@
-# scoswm — the SCos window manager, ported to Linux
+# scoswm — the SCos desktop experience as a real Linux window manager
 
-`scoswm` is the desktop/window manager from
-[SCos](https://github.com/Joercat/SCos) (a bare-metal x86-64 operating
-system) running as an ordinary Linux user process: the SCos desktop —
-wallpaper, desktop icons, window decorations, taskbar, launcher,
-notifications, themes — in a window on your existing session.
+![scoswm running the Blue Sky theme, managing a real X11 application](docs/scoswm.png)
 
-It is **not** a window manager for native Linux applications. Just as on
-bare metal, the things that live inside it are SCos's own built-in apps
-(File Explorer, Terminal, Notepad, Calendar, Settings, About SCos,
-Web Browser notice, Blackjack, System Monitor, Solitaire), drawn by the
-SCos software compositor into its own framebuffer. Think of it as the
-SCos desktop with a Linux host underneath instead of the SCos kernel.
+`scoswm` is a small, non-compositing **X11 window manager** that manages
+your ordinary Linux applications — terminals, browsers, editors, games —
+while looking and behaving like the [SCos](https://github.com/Joercat/SCos)
+desktop: the bottom taskbar with its 2×2-grid launcher, "Windows N"
+picker, pinned shortcuts, power button and clock; desktop icons on a
+snap grid over a gradient+grid wallpaper; 26 px titlebars with
+minimise/maximise/close buttons; and the four SCos themes
+(**Matrix** `matrix-1`, **Blue Sky** `blue-sky`, **Purple**
+`midnight-purple`, **Matrix red** `amber-tech`) with the exact palettes
+from SCos's `kernel/desktop/theme.c`.
 
-![The SCos desktop running under the Linux port: Matrix theme, desktop icons, taskbar and clock](docs/desktop.png)
+An earlier version of this project ran the SCos desktop itself inside
+one SDL window. That could only ever run SCos's built-in apps, so it
+has been replaced wholesale by this window manager: same look, same
+interaction model, real applications.
 
-That screenshot (and the System Monitor one below) was produced by the
-headless backend — `make check` regenerates equivalent frames and
-asserts on them.
+## Why X11 (and why it is the lightweight choice)
 
-![System Monitor in the Linux port, reporting the host CPU and memory](docs/sysmon.png)
+- **One code path for your GPU.** Xorg runs on the NVIDIA proprietary
+  driver and on nouveau with identical behaviour — no per-driver
+  compositor quirks. Intel/AMD work the same way for when you need them.
+- **No compositor tax.** Clients render directly through the X server
+  and the GPU driver; `scoswm` itself only draws window decorations
+  and the taskbar. Idle cost is a few MB of RAM and ~0% CPU (it blocks
+  on the X connection and wakes once a second for the clock).
+- **Wayland programs still work** through XWayland, which every major
+  toolkit supports.
 
-## Run it
+The only runtime dependency is `libX11`.
 
-On Arch Linux:
+## Install
+
+Arch (this repo ships a `PKGBUILD`):
 
 ```sh
-sudo pacman -S --needed base-devel sdl2 pkgconf
+makepkg -si
+```
+
+Any distro:
+
+```sh
 make
-./scoswm            # windowed (X11 or Wayland, via SDL2)
+sudo make install          # /usr/bin/scoswm, session files under /usr/share
 ```
 
-Other distributions use the same `make` — only the SDL2 development
-package name differs:
-
-| Distribution | Install build dependencies |
-|---|---|
-| Arch / Manjaro | `pacman -S base-devel sdl2 pkgconf` |
-| Debian / Ubuntu | `apt install build-essential libsdl2-dev pkg-config` |
-| Fedora | `dnf install gcc make SDL2-devel pkgconf-pkg-config` |
-| openSUSE | `zypper install gcc make libSDL2-devel pkg-config` |
-| Alpine | `apk add build-base sdl2-dev pkgconf` |
-| FreeBSD | `pkg install gcc gmake sdl2 pkgconf` (use `gmake`) |
-
-If a prebuilt package is more your speed, an (unofficial) Arch package
-recipe is included — from this directory:
+Then pick **SCosWM** in your display manager, or from a TTY:
 
 ```sh
-makepkg -si        # builds from the git checkout in ./pkgbuild-src
-```
-
-or install manually:
-
-```sh
-make install                       # /usr/local; use PREFIX= to change
-scoswm
+echo 'exec scoswm-session' >> ~/.xinitrc
+startx
 ```
 
 ## Using it
 
-Everything works the way it does in SCos itself, because it is the same
-code: drag title bars to move windows, use the corner handle to resize,
-double-click desktop icons, right-click for context menus, drag with
-either button on the wallpaper to rubber-band-select icons, open the
-app launcher from the bottom-left grid button, pin/unpin apps to the
-taskbar, switch themes in Settings (Matrix, Blue Sky, Purple,
-Matrix red, plus custom palettes), and use the Terminal — its commands
-(`help`) operate on the SCos RAM filesystem, exactly as on bare metal.
+| Action | How |
+|---|---|
+| Open the app launcher | Click the 2×2 grid button, or `Super+D`. Type to search, arrows + Enter, `Esc` closes |
+| Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
+| Window list | "Windows N" taskbar button |
+| Move / resize | Drag the titlebar / bottom-right grip, or `Alt+drag` / `Alt+right-drag` anywhere |
+| Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click titlebar/taskbar button for a menu |
+| Cycle windows | `Alt+Tab` / `Alt+Shift+Tab` |
+| Terminal | `Super+Enter` |
+| Close focused window | `Alt+F4` or `Super+Q` |
+| Minimise / maximise focused | `Alt+F9` / `Alt+F10` |
+| Desktop menu | Right-click the desktop |
+| Power menu | Taskbar power button: lock, restart/exit the WM, suspend, reboot, power off (via `systemctl`) |
 
-Host-specific behaviour:
+The launcher indexes `.desktop` files from
+`~/.local/share/applications`, `/usr/local/share/applications` and
+`/usr/share/applications`. Everything a normal desktop runs — Firefox,
+Steam, VS Code, your file manager — appears there.
 
-- **Power menu / `shutdown` / `reboot` / Ctrl+Alt+Del** quit `scoswm`
-  and return you to your host session. `scoswm` will never reboot or
-  power off the machine it runs on.
-- **Persistence:** files, theme, desktop layout and pins live in the
-  SCos RAM filesystem, snapshotted to
-  `$XDG_DATA_HOME/scoswm/vfs.snapshot` (usually
-  `~/.local/share/scoswm/vfs.snapshot`). The snapshot is written on
-  clean exit and by the Terminal `save` command. Use `--data-dir DIR`
-  to put it somewhere else (this is also how you run isolated copies).
-- **Size:** `--width`/`--height` choose the desktop size (fixed for the
-  session, like the firmware display mode was); resizing the host
-  window scales it. `--fullscreen` fills the screen — handy on a spare
-  VT or a kiosk-style session.
+## Configuration
 
-```sh
-scoswm --fullscreen
-scoswm --width 1280 --height 800 --open terminal
+`~/.config/scoswm/scoswm.conf` (see `packaging/scoswm.conf.example`):
+
+```ini
+theme = blue-sky
+terminal = alacritty
+pins = terminal, files, firefox, code
+bar_height = 40
 ```
 
-## What is and is not ported
+Themes take effect on the next start; the power/desktop menus have a
+**Restart WM** entry that keeps your windows open. An optional
+`~/.config/scoswm/autostart.sh` is run by `scoswm-session`.
 
-Ported, running the original code: the compositor/WM, desktop shell,
-taskbar/launcher/menus/dialogs/notifications, themes and custom
-palettes, the RAM filesystem, and the ten built-in apps listed above.
-
-Not ported (yet), and never faked:
-
-- **Lua / `.cat` user apps and App Studio.** The bare-metal port runs
-  Lua apps inside the kernel; there is no Lua runtime in this port, so
-  `.cat` packages cannot be installed and Studio (which existed to
-  build them) is not included. `appstrt` of a `.cat` file and
-  `appuninstall` say so instead of pretending.
-- **The kernel text consoles (`tty`)**, GPU acceleration, networking
-  and a real web browser — these were kernel/hardware features of
-  SCos, and the compositor remains a CPU renderer just as it is on
-  SCos hardware without a bound GPU module.
-- **`panic` / `sysrq panic`** print the panic to stderr and abort the
-  process (there is no kernel left to halt).
-
-See [PORTING.md](PORTING.md) for how the bare-metal services were
-mapped to Linux, file by file.
+`scoswm --theme blue-sky` overrides the theme for one run;
+`scoswm --config FILE` loads a specific config. `SCOSWM_DEBUG=1`
+logs X errors.
 
 ## Development
 
 ```sh
-make headless   # build ./scoswm-headless (no SDL2 needed)
-make check      # headless smoke tests: desktop, apps, input, persistence
+make check
 ```
 
-`scoswm-headless` runs the same WM with no display: `--frames N`
-presents N frames then quits, `--screenshot out.ppm` saves the final
-frame, and `--click X,Y` / `--type TEXT` inject synthetic input.
-`SCOSWM_DEBUG=1` mirrors the SCos kernel log to stderr.
+runs unit tests for the pure logic (SCos theme values, config and
+`.desktop` parsing, Exec field-code stripping, UTF-8 titles — all in
+`src/util.c`, no X server needed) and, when Xvfb is available, an
+integration test that boots the WM, manages a real Xlib client
+(`tests/testclient.c`) and verifies adoption through the window tree
+(`tests/xprobe.c`). Without any X server the integration step reports
+SKIP.
 
-Upstream: the ported sources are from SCos commit
-`33edc51f31ababd19bc0b3d072018b40555a1773` (branch
-`arena/01a09dfd-scos`). The SCos sources keep their original copyright
-and comments; third-party notices for the (currently unused) Lua tree
-remain with the upstream project.
+`PORTING.md` documents how each piece of the SCos desktop maps onto
+this WM and where real-application behaviour necessarily differs.
+
+## Layout
+
+- `src/scoswm.c` — the window manager (Xlib, EWMH/ICCCM)
+- `src/util.c` — X-independent helpers: themes, config, `.desktop` discovery
+- `packaging/` — display-manager session, example config, session script
+- `tests/` — unit tests, integration harness client/probe

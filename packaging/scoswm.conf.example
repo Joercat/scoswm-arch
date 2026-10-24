@@ -1,0 +1,34 @@
+# scoswm configuration — copy to ~/.config/scoswm/scoswm.conf
+# (or $XDG_CONFIG_HOME/scoswm/scoswm.conf). Lines are key = value.
+
+# One of: matrix-1 (Matrix), blue-sky (Blue Sky), midnight-purple
+# (Purple), amber-tech (Matrix red). These are the four SCos themes.
+theme = matrix-1
+
+# Or build a custom palette (hex RRGGBB). Setting any colour switches
+# the theme to "custom"; fields you omit inherit the Matrix values.
+# main       = #39FF14
+# bg_top     = #031403
+# bg_bot     = #000800
+# win_bg     = #1a1a1a
+# text       = #39FF14
+# title_text = #001500
+# taskbar_bg = #141414
+
+# Programs. Empty terminal/files = auto-detect
+# (alacritty, kitty, st, xfce4-terminal, gnome-terminal, konsole,
+# foot, xterm / thunar, pcmanfm, nautilus, dolphin, nemo).
+terminal =
+files =
+
+# X core font for decorations.
+# font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
+
+# Taskbar pins + desktop icons: comma-separated .desktop ids
+# (from /usr/share/applications, ~/.local/share/applications),
+# app names, the pseudo-pins terminal/files/web-browser, or bare
+# commands.
+pins = terminal, files, web-browser
+
+# Taskbar height (SCos used 40).
+bar_height = 40
