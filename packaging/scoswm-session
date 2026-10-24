@@ -12,6 +12,14 @@ export XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-x11}
 export XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-SCosWM}
 export DESKTOP_SESSION=${DESKTOP_SESSION:-scoswm}
 
+# SCosWM supplies the titlebar and window controls.  Ask Firefox and
+# ordinary GTK windows to use those server-side decorations instead of
+# drawing a second set of buttons.  Explicit user environment choices
+# still win; Chromium's own "Use system title bar and borders" setting
+# remains an application preference rather than something the WM edits.
+export MOZ_GTK_TITLEBAR_DECORATION=${MOZ_GTK_TITLEBAR_DECORATION:-system}
+export GTK_CSD=${GTK_CSD:-0}
+
 log_dir=${XDG_CACHE_HOME:-$HOME/.cache}/scoswm
 log_file=
 if mkdir -p "$log_dir" 2>/dev/null; then

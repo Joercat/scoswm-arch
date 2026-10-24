@@ -15,14 +15,17 @@ theme = matrix-1
 # title_text = #001500
 # taskbar_bg = #141414
 
-# Programs. Empty terminal/files = auto-detect
-# (alacritty, kitty, st, xfce4-terminal, gnome-terminal, konsole,
-# xterm / thunar, pcmanfm, nautilus, dolphin, nemo).
+# Programs. Empty terminal prefers the bundled scos-terminal, which runs
+# a real interactive Bash. Set an explicit command to use another terminal.
+# Empty files auto-detects thunar, pcmanfm, nautilus, dolphin or nemo.
+# Examples: terminal = alacritty
+#           terminal = xterm -fa fixed
 terminal =
 files =
 
-# X core font for decorations.
-# font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
+# X core font for WM decorations and the terminal. With this empty the
+# terminal prefers an ISO10646 (Unicode) fixed font from xfonts-base.
+# font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso10646-1
 
 # Taskbar pins + desktop icons ("Home" apps). The retained SCos core
 # apps are terminal, files, sysmon and settings. You may also use

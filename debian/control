@@ -13,10 +13,10 @@ Package: scoswm
 Architecture: any
 Depends: ${shlibs:Depends},
  ${misc:Depends},
+ bash,
  xfonts-base
 Recommends: xserver-xorg-core,
  xinit,
- xterm | x-terminal-emulator,
  xdg-utils,
  dbus-x11,
  libxcursor1
@@ -28,7 +28,9 @@ Description: SCos-styled lightweight X11 window manager
  ordinary Linux applications while looking and behaving like the SCos
  desktop: bottom taskbar with launcher, window picker, pins, power
  button and clock; real freedesktop icons on the desktop and taskbar;
- and the built-in Terminal/Files/SysMon/Settings core apps.
+ and the Terminal/Files/SysMon/Settings core apps.  The included
+ scos-terminal runs a real interactive Bash on a PTY and installs its
+ own application entry, so it also works in KDE and other desktops.
  .
  It installs /usr/share/xsessions/scoswm.desktop, so display managers
  such as SDDM offer "SCosWM" as a selectable X11 session at login.

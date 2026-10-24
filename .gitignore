@@ -1,3 +1,6 @@
 /scoswm
+/scos-terminal
 /test_util
+/test_terminal
+/test_pty
 /*.deb

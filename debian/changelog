@@ -1,3 +1,20 @@
+scoswm (0.5.0) unstable; urgency=medium
+
+  * Add scos-terminal, a standalone SCos-styled Xlib terminal with tabs,
+    scrollback, UTF-8, colors, fullscreen application support, selection
+    and clipboard integration. It runs a real interactive Bash on a PTY,
+    not a simulated command parser.
+  * Install a freedesktop application entry so SCos Terminal can be
+    launched independently from KDE and other desktops.
+  * Prefer scos-terminal for the WM's Terminal action while preserving
+    explicitly configured terminal commands and external fallbacks.
+  * Request system titlebars for Firefox and ordinary GTK applications
+    in the SCosWM session, without overriding explicit environment
+    settings; document Chromium's own system-titlebar preference.
+  * Add terminal parser, resize/scrollback and real-Bash PTY tests.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 16:00:00 -0400
+
 scoswm (0.4.4) unstable; urgency=medium
 
   * Fix the desktop wallpaper pixmap: the gradient and grid were still

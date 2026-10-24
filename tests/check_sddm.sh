@@ -31,4 +31,12 @@ try_cmd=$(get TryExec | awk '{print $1}')
 [ -x "$tmp/usr/bin/scoswm" ] || { echo "FAIL: scoswm binary not installed"; exit 1; }
 sh -n "$tmp/usr/bin/scoswm-session"
 
+app="$tmp/usr/share/applications/scos-terminal.desktop"
+[ -f "$app" ] || { echo "FAIL: no standalone SCos Terminal desktop entry installed"; exit 1; }
+[ -x "$tmp/usr/bin/scos-terminal" ] || { echo "FAIL: scos-terminal binary not installed"; exit 1; }
+grep -qx 'Name=SCos Terminal' "$app" || { echo "FAIL: terminal desktop entry has the wrong name"; exit 1; }
+grep -qx 'Exec=scos-terminal' "$app" || { echo "FAIL: terminal desktop entry does not launch scos-terminal"; exit 1; }
+grep -qx 'Terminal=false' "$app" || { echo "FAIL: graphical terminal must not be nested in another terminal"; exit 1; }
+
 echo "SDDM session check: SCosWM will be listed and launchable ($entry)"
+echo "Standalone application check: SCos Terminal is available to other desktops ($app)"

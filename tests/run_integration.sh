@@ -10,8 +10,8 @@ WMPID=; CPID=; XPID=
 cleanup() { [ -n "$WMPID" ] && kill $WMPID 2>/dev/null; [ -n "$CPID" ] && kill $CPID 2>/dev/null; [ -n "$XPID" ] && kill $XPID 2>/dev/null; rm -rf "$TMP"; }
 trap cleanup EXIT INT TERM
 
-cc -O2 -o "$TMP/xprobe" tests/xprobe.c -lX11 || { echo "SKIP: cannot build probe (libX11 dev files?)"; exit 0; }
-cc -O2 -o "$TMP/testclient" tests/testclient.c -lX11 || { echo "SKIP: cannot build client"; exit 0; }
+cc ${CPPFLAGS:-} ${CFLAGS:--O2} -o "$TMP/xprobe" tests/xprobe.c ${LDFLAGS:-} -lX11 || { echo "SKIP: cannot build probe (libX11 dev files?)"; exit 0; }
+cc ${CPPFLAGS:-} ${CFLAGS:--O2} -o "$TMP/testclient" tests/testclient.c ${LDFLAGS:-} -lX11 || { echo "SKIP: cannot build client"; exit 0; }
 
 if [ -z "${DISPLAY:-}" ]; then
     if command -v Xvfb >/dev/null 2>&1; then

@@ -21,10 +21,12 @@ interaction model, real applications.
 
 The app set is intentionally small. The retained SCos core is
 **Terminal, Files, SysMon and Settings** — no games, demos or duplicate
-utilities. Terminal and Files open your configured/detected Linux
-programs; SysMon and Settings are tiny built-in panels. SysMon reads
-only `/proc` and `/sys` (including NVIDIA proprietary vs nouveau
-detection) and only samples while open. Settings changes the theme,
+utilities. Terminal is the included `scos-terminal` application: an
+SCos-styled, tabbed terminal running a real interactive Bash on a Linux
+PTY. Files opens your configured/detected Linux file manager; SysMon and
+Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
+(including NVIDIA proprietary vs nouveau detection) and only samples
+while open. Settings changes the theme,
 taskbar height, program choices and pins, applies them live and saves
 the normal config file.
 
@@ -42,9 +44,11 @@ the normal config file.
 - **Wayland programs still work** through XWayland, which every major
   toolkit supports.
 
-The only runtime dependencies are `libX11` and zlib (the latter is
-used to decode standard PNG app icons) — on Debian those are the
-`libx11-6`/`zlib1g` packages, pulled in automatically by the `.deb`.
+The shared-library runtime dependencies are `libX11` and zlib (the
+latter is used to decode standard PNG app icons) — on Debian those are
+the `libx11-6`/`zlib1g` packages, pulled in automatically by the `.deb`.
+The terminal uses the system's PTY support and Bash; no Konsole, VTE, or
+other terminal-emulation library is embedded or required.
 
 ## Install
 
@@ -74,7 +78,7 @@ Any distro:
 
 ```sh
 make
-sudo make install          # /usr/bin/scoswm, session files under /usr/share
+sudo make install          # WM + scos-terminal + desktop/session entries
 ```
 
 ### Selecting SCosWM in SDDM
@@ -156,13 +160,63 @@ rest of `XDG_DATA_DIRS`) plus the Flatpak and Snap export directories
 Flatpaks and Snaps are all available without cluttering the
 default view.
 
+## SCos Terminal
+
+`Super+Enter`, the Terminal icon, and the launcher open **SCos Terminal**
+by default. It starts `/bin/bash` on a real pseudo-terminal, so Bash,
+Readline, SSH, Vim, htop, tmux, and ordinary Linux command-line programs
+run normally; it is not a simulated SCos command parser. The frontend
+provides SCos-styled tabs, 1024 lines of scrollback, UTF-8 decoding and
+Unicode core-font output, ANSI/256/true-color attributes, alternate
+screens, application cursor keys and mouse reports, terminal resize
+notifications, selection, and clipboard paste.
+
+| Terminal action | How |
+|---|---|
+| New / close tab | `Ctrl+Shift+T` / `Ctrl+Shift+W`, or the tab `+` / `x` buttons |
+| Cycle tabs | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
+| Copy / paste | Select with the mouse and `Ctrl+Shift+C` / `Ctrl+Shift+V`; middle-click pastes the primary selection |
+| Scroll | Mouse wheel or `Shift+PageUp` / `Shift+PageDown`; typing returns to the live prompt |
+
+Bash's normal `Ctrl+T` and `Ctrl+W` editing keys are deliberately left
+for the shell. Fullscreen applications receive their mouse input;
+holding Shift bypasses that for terminal selection/scrolling.
+
+The package also installs `/usr/share/applications/scos-terminal.desktop`,
+so **SCos Terminal** appears in KDE, GNOME, and other application menus
+and works independently of SCosWM. Direct command-line use is:
+
+```sh
+scos-terminal                         # interactive Bash
+scos-terminal -e htop                 # run one command instead of Bash
+scos-terminal -hold -e bash -c 'ls -l; read'
+```
+
+An explicit `terminal = ...` in `scoswm.conf` still takes priority for
+SCosWM's Terminal action. Set `SCOS_SHELL` only if you intentionally
+want a shell other than the default Bash.
+
+## Browser titlebars and window controls
+
+SCosWM draws the SCos titlebar and controls for managed X11 windows.
+The session asks Firefox and ordinary GTK applications to use those
+system decorations (`MOZ_GTK_TITLEBAR_DECORATION=system` and `GTK_CSD=0`)
+without overriding values you explicitly exported. Restart the browser
+after logging into SCosWM so it sees those values.
+
+Chromium/Chrome's custom frame is its own preference: enable **Use system
+title bar and borders** in Settings → Appearance or from the tab-strip
+context menu. Applications with an intentionally custom titlebar can
+still draw one; an X11 WM cannot remove buttons from inside a client's
+own pixels, and SCosWM does not modify browser profiles behind your back.
+
 ## Configuration
 
 `~/.config/scoswm/scoswm.conf` (see `packaging/scoswm.conf.example`):
 
 ```ini
 theme = blue-sky
-terminal = alacritty
+terminal =                 # empty = SCos Terminal; or name another command
 pins = terminal, files, sysmon, settings, firefox, code
 bar_height = 40
 ```
@@ -176,8 +230,9 @@ windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 There are deliberately **no multiple workspaces**: one workspace, no
 pager, no workspace daemon and no extra background process.
 
-On Debian the default terminal honours the `x-terminal-emulator`
-alternative (`sudo update-alternatives --config x-terminal-emulator`).
+With `terminal =` empty, SCosWM prefers its installed `scos-terminal`.
+External terminals remain supported as an explicit custom command and as
+a fallback if the bundled executable is unavailable.
 
 `scoswm --theme blue-sky` overrides the theme for one run;
 `scoswm --config FILE` loads a specific config. `SCOSWM_DEBUG=1`
@@ -190,9 +245,10 @@ make check
 ```
 
 runs unit tests for the pure logic (SCos theme values, config and
-`.desktop` parsing, Exec field-code stripping, UTF-8 titles — all in
-`src/util.c`, no X server needed) and, when Xvfb is available, an
-integration test that boots the WM, manages a real Xlib client
+`.desktop` parsing, Exec field-code stripping, UTF-8 titles), terminal
+emulation checks, and a real interactive-Bash PTY integration test — all
+without needing an X server. When Xvfb is available, it also boots the
+WM, manages a real Xlib client
 (`tests/testclient.c`) and verifies adoption through the window tree
 (`tests/xprobe.c`). Without any X server the integration step reports
 SKIP.
@@ -203,6 +259,8 @@ this WM and where real-application behaviour necessarily differs.
 ## Layout
 
 - `src/scoswm.c` — the window manager (Xlib, EWMH/ICCCM)
+- `src/scos-terminal.c` — standalone Xlib terminal frontend and PTY sessions
+- `src/term_emulation.c` — display-independent terminal screen and VT parser
 - `src/util.c` — X-independent helpers: themes, config, `.desktop` discovery, Linux `/proc` parsers
 - `packaging/` — display-manager session, example config, session script
 - `tests/` — unit tests, integration harness client/probe

@@ -24,7 +24,7 @@ it could only run SCos's built-in apps.
 | Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
 | Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff |
 | Settings app | Built-in lightweight panel: live theme/taskbar changes, Terminal/Files/Pins editing, saved to `~/.config/scoswm/scoswm.conf` |
-| SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal/Files delegate to real Linux programs; SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
+| SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal is the standalone `scos-terminal` Xlib/PTY application running real Bash; Files delegates to a real Linux file manager; SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
 
 ## Protocol coverage
 
@@ -40,15 +40,17 @@ EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 (dock/desktop/notification left unmanaged; utility/splash kept off the
 taskbar). Root supports RandR-driven resize via its ConfigureNotify.
 
-By design: a single workspace only (no pager/workspace daemon). Not yet: `_NET_WM_ICON` taskbar icons
-(pins show the SCos-style initial glyph), Xft/fontconfig text
-(core fonts only, titles converted UTF-8 → Latin-1), compositing
-effects of any kind (by design).
+By design: a single workspace only (no pager/workspace daemon) and no
+compositing effects. `_NET_WM_ICON` and freedesktop icon images are used
+for clients and pins. Text uses core fonts rather than Xft/fontconfig;
+WM titles are converted UTF-8 → Latin-1, while the terminal uses an
+ISO10646 font when available for its Unicode cell grid.
 
 ## Verification
 
 - `make check`: unit tests for everything X-independent, including the
-  SCos theme constants — a theme edit that diverges from SCos fails CI.
+  SCos theme constants, terminal parser/screen behavior and a real
+  interactive-Bash PTY session — a theme or terminal regression fails CI.
 - `tests/run_integration.sh`: under Xvfb, boots scoswm and checks a
   real Xlib client is framed, focused and listed.
 - During development the WM was additionally exercised against a
