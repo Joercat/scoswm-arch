@@ -37,6 +37,9 @@ void config_defaults(struct scos_config *cfg);
  * Unknown keys are ignored; returns number of keys applied, -1 if the
  * file could not be opened. */
 int config_load_file(const char *path, struct scos_config *cfg);
+/* Write the configuration back in scoswm.conf format. Comments and
+ * unknown keys are not preserved. Returns 1 on success. */
+int config_save_file(const char *path, const struct scos_config *cfg);
 void theme_apply_custom(struct scos_theme *out, const struct scos_config *cfg);
 
 /* ------------------------------------------------------- .desktop apps */
@@ -62,5 +65,16 @@ int ci_contains(const char *hay, const char *needle);
 /* UTF-8 -> the Latin-1 subset an X core font can show; unrepresentable
  * characters become '?', invalid bytes are skipped. */
 void utf8_to_latin1(const char *in, char *out, int cap);
+
+/* ---------------------------------------------------------- Linux data */
+struct linux_meminfo {
+    unsigned long total_kb, available_kb, swap_total_kb, swap_free_kb;
+};
+/* Parsers accept complete file text so they can be unit-tested without
+ * depending on the host's live /proc contents. */
+int parse_meminfo_text(const char *text, struct linux_meminfo *out);
+int parse_cpu_stat_text(const char *text, unsigned long long *idle,
+                        unsigned long long *total);
+int parse_loadavg_text(const char *text, double *load1, int *processes);
 
 #endif

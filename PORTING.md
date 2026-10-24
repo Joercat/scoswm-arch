@@ -21,10 +21,10 @@ it could only run SCos's built-in apps.
 | `wm.c` 26 px titlebar, 18 px min/max/close, accent when focused, `color_blend` when not | Same geometry and colours in `src/scoswm.c: draw_frame()`; buttons act on the real client window (ICCCM `WM_DELETE_WINDOW`, EWMH state for maximise/minimise) |
 | Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()`; the picker is a real window list, pins launch/focus real apps |
 | Launcher grid + `user/apps` | Launcher panel over the taskbar indexing freedesktop `.desktop` files, type-to-search — the Linux-native equivalent |
-| Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; icons are your pins, double-click launches/focuses the real app; right-click menu opens Terminal/Files/Browser/launcher/config |
+| Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
 | Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff |
-| Settings app theme editing | Config file (`~/.config/scoswm/scoswm.conf`) + Restart WM; `--theme` for one-off runs |
-| SCos built-in apps (Terminal, Files, Settings, SysMon, …) | **Deliberately not ported.** Your real terminal/file manager/settings tools take their place via pins and auto-detection. |
+| Settings app | Built-in lightweight panel: live theme/taskbar changes, Terminal/Files/Pins editing, saved to `~/.config/scoswm/scoswm.conf` |
+| SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal/Files delegate to real Linux programs; SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
 
 ## Protocol coverage
 
@@ -40,7 +40,7 @@ EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 (dock/desktop/notification left unmanaged; utility/splash kept off the
 taskbar). Root supports RandR-driven resize via its ConfigureNotify.
 
-Not yet: multiple desktops/workspaces, `_NET_WM_ICON` taskbar icons
+By design: a single workspace only (no pager/workspace daemon). Not yet: `_NET_WM_ICON` taskbar icons
 (pins show the SCos-style initial glyph), Xft/fontconfig text
 (core fonts only, titles converted UTF-8 → Latin-1), compositing
 effects of any kind (by design).

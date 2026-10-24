@@ -1,6 +1,6 @@
 # Maintainer: scoswm contributors
 pkgname=scoswm
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="SCos-styled lightweight X11 window manager for real Linux applications"
 arch=('x86_64' 'aarch64')
@@ -10,8 +10,7 @@ depends=('libx11')
 makedepends=('gcc' 'make')
 optdepends=('xorg-server: X server (Xorg or XWayland host)'
             'xterm: fallback terminal for Super+Enter'
-            'slock: screen locker for the power menu'
-            'imagemagick: screenshot/docs tooling only')
+            'slock: screen locker for the power menu')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

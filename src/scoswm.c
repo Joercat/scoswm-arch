@@ -27,6 +27,7 @@
 #include <X11/keysym.h>
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -38,6 +39,8 @@
 #include <string.h>
 #include <strings.h>
 #include <sys/select.h>
+#include <sys/stat.h>
+#include <sys/utsname.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -46,7 +49,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.2.0"
+#define VERSION "0.3.0"
 #endif
 
 #define TITLE_H 26
@@ -54,11 +57,13 @@
 #define TOP_H (TITLE_H + 1)          /* titlebar + top border */
 #define DESK_COL_W 88
 #define DESK_ROW_H 96
+#define TOOL_W 540
+#define TOOL_H 390
 
 /* ------------------------------------------------------------------ state */
 static Display *dpy;
 static int scr_no;
-static Window root, wmcheck, bar_win, launch_win, menu_win;
+static Window root, wmcheck, bar_win, launch_win, menu_win, tool_win;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -117,7 +122,8 @@ static struct client *active_client;
 static struct desktop_app apps[512];
 static int napps;
 
-struct pin { char label[64]; char command[512]; char match[96]; };
+enum core_action { CORE_NONE, CORE_TERMINAL, CORE_FILES, CORE_SYSMON, CORE_SETTINGS };
+struct pin { char label[64]; char glyph[4]; char command[512]; char match[96]; int action; };
 static struct pin pins[32];
 static int npins;
 
@@ -206,24 +212,43 @@ static const char *detect_terminal(void)
     if (cfg.terminal[0]) return cfg.terminal;
     static const char *const list[] = {
         "alacritty", "kitty", "st", "xfce4-terminal", "gnome-terminal",
-        "konsole", "foot", "xterm", NULL
+        "konsole", "xterm", NULL
     };
     for (int i = 0; list[i]; i++)
         if (cmd_exists(list[i])) { snprintf(found, sizeof(found), "%s", list[i]); return found; }
     return "xterm";
 }
 
-static const char *detect_files(void)
+static const char *detect_files_exec(void)
 {
-    static char found[160];
-    if (cfg.files[0]) return cfg.files;
     static const char *const list[] = { "thunar", "pcmanfm", "nautilus", "dolphin", "nemo", NULL };
     for (int i = 0; list[i]; i++)
-        if (cmd_exists(list[i])) {
-            snprintf(found, sizeof(found), "%s", list[i]); return found;
-        }
-    snprintf(found, sizeof(found), "xdg-open %s", getenv("HOME") ? getenv("HOME") : "/");
-    return found;
+        if (cmd_exists(list[i])) return list[i];
+    return NULL;
+}
+
+static void spawn_files_at(const char *path)
+{
+    char cmd[1024];
+    if (!path || !*path) path = getenv("HOME") ? getenv("HOME") : "/";
+    if (cfg.files[0]) {
+        /* A configured command with arguments is run exactly as written;
+         * a bare executable is given the requested folder. */
+        if (!strchr(cfg.files, ' ') && !strchr(cfg.files, '\t'))
+            snprintf(cmd, sizeof(cmd), "%s %s", cfg.files, path);
+        else
+            snprintf(cmd, sizeof(cmd), "%s", cfg.files);
+    } else {
+        const char *exec = detect_files_exec();
+        if (exec) snprintf(cmd, sizeof(cmd), "%s %s", exec, path);
+        else snprintf(cmd, sizeof(cmd), "xdg-open %s", path);
+    }
+    spawn(cmd);
+}
+
+static void spawn_files_home(void)
+{
+    spawn_files_at(getenv("HOME") ? getenv("HOME") : "/");
 }
 
 /* ------------------------------------------------------------ work area */
@@ -358,6 +383,15 @@ static void draw_bar(void);
 static void update_ewmh_client_list(void);
 static void launcher_toggle(int open);
 static void wm_notify_no_windows(void);
+static void menu_close(void);
+enum { TOOL_NONE, TOOL_SETTINGS, TOOL_SYSMON };
+static int tool_kind;
+static void tool_open(int kind);
+static void tool_close(void);
+static void draw_tool(void);
+static int tool_key(XKeyEvent *e);
+static int tool_button(XButtonEvent *e);
+static void spawn_files_home(void);
 static void menu_open(int kind, int x, int y, Window target);
 
 static void set_wm_state(struct client *c, int state)
@@ -531,7 +565,7 @@ static void recalc_struts(void)
 
 static void manage(Window win)
 {
-    if (win == bar_win || win == launch_win || win == menu_win || win == wmcheck) return;
+    if (win == bar_win || win == launch_win || win == menu_win || win == tool_win || win == wmcheck) return;
     if (find_client(win)) return;
     XWindowAttributes at;
     if (!XGetWindowAttributes(dpy, win, &at)) return;
@@ -647,19 +681,68 @@ static void update_ewmh_client_list(void)
 }
 
 /* ------------------------------------------------------------- launcher */
+/* The launcher is intentionally curated. Its normal view contains only
+ * the four SCos core apps and the user's pins. Typing a search term is
+ * the deliberate escape hatch that also searches installed .desktop
+ * applications, so hundreds of utilities do not clutter daily use. */
 static int launch_open, launch_offset, launch_sel;
 static char launch_q[64];
-static int launch_filtered[512];
+
+struct launch_item { char name[128]; char glyph[4]; char command[1024]; int action; };
+static struct launch_item launch_items[1056];
+static int launch_nitems;
+
+static const struct { const char *name, *glyph, *keywords; int action; } core_apps[] = {
+    { "Terminal", "Tr", "terminal shell console command", CORE_TERMINAL },
+    { "Files",    "Fi", "files file manager home documents downloads", CORE_FILES },
+    { "SysMon",   "Sy", "sysmon system monitor cpu memory gpu processes", CORE_SYSMON },
+    { "Settings", "Se", "settings theme configuration preferences", CORE_SETTINGS },
+};
+
+static void run_core_action(int action);
+static void launch_cmd_for(const struct desktop_app *a, char *out, int cap);
+
+static void launch_add(const char *name, const char *glyph, const char *command, int action)
+{
+    if (!name || !*name || launch_nitems >= (int)(sizeof(launch_items) / sizeof(launch_items[0]))) return;
+    for (int i = 0; i < launch_nitems; i++)
+        if (launch_items[i].action == action && !strcmp(launch_items[i].name, name) &&
+            !strcmp(launch_items[i].command, command ? command : "")) return;
+    struct launch_item *it = &launch_items[launch_nitems++];
+    snprintf(it->name, sizeof(it->name), "%s", name);
+    snprintf(it->glyph, sizeof(it->glyph), "%s", glyph && *glyph ? glyph : "A");
+    snprintf(it->command, sizeof(it->command), "%s", command ? command : "");
+    it->action = action;
+}
 
 static int launch_rebuild(void)
 {
-    int n = 0;
-    for (int i = 0; i < napps; i++)
-        if (ci_contains(apps[i].name, launch_q) || ci_contains(apps[i].exec, launch_q))
-            launch_filtered[n++] = i;
-    if (launch_sel >= n) launch_sel = n > 0 ? n - 1 : 0;
+    launch_nitems = 0;
+    int searching = launch_q[0] != 0;
+    for (unsigned int i = 0; i < sizeof(core_apps) / sizeof(core_apps[0]); i++)
+        if (ci_contains(core_apps[i].name, launch_q) || ci_contains(core_apps[i].keywords, launch_q))
+            launch_add(core_apps[i].name, core_apps[i].glyph, "", core_apps[i].action);
+
+    /* Pins are part of the user's normal desktop, so keep them visible. */
+    for (int i = 0; i < npins; i++) {
+        if (pins[i].action != CORE_NONE) continue;
+        if (ci_contains(pins[i].label, launch_q))
+            launch_add(pins[i].label, pins[i].glyph, pins[i].command, CORE_NONE);
+    }
+
+    /* Installed applications appear only after the user starts typing. */
+    if (searching) {
+        for (int i = 0; i < napps; i++) {
+            if (!ci_contains(apps[i].name, launch_q) && !ci_contains(apps[i].exec, launch_q)) continue;
+            char cmd[1024];
+            launch_cmd_for(&apps[i], cmd, sizeof(cmd));
+            char glyph[4] = { apps[i].name[0] ? apps[i].name[0] : 'A', 0 };
+            launch_add(apps[i].name, glyph, cmd, CORE_NONE);
+        }
+    }
+    if (launch_sel >= launch_nitems) launch_sel = launch_nitems > 0 ? launch_nitems - 1 : 0;
     if (launch_sel < 0) launch_sel = 0;
-    return n;
+    return launch_nitems;
 }
 
 static void launch_cmd_for(const struct desktop_app *a, char *out, int cap)
@@ -670,13 +753,33 @@ static void launch_cmd_for(const struct desktop_app *a, char *out, int cap)
     else snprintf(out, cap, "%s", cmd);
 }
 
+static void launch_exec_item(const struct launch_item *it)
+{
+    if (!it) return;
+    if (it->action != CORE_NONE) run_core_action(it->action);
+    else spawn(it->command);
+}
+
 static void launch_pin(int i)
 {
+    if (i < 0 || i >= npins) return;
+    if (pins[i].action != CORE_NONE) { run_core_action(pins[i].action); return; }
     struct client *match = NULL;
     for (int k = 0; k < nclients; k++)
         if (pins[i].match[0] && strstr(clients[k]->wclass, pins[i].match)) match = clients[k];
     if (match) activate(match, 1);
     else spawn(pins[i].command);
+}
+
+static void run_core_action(int action)
+{
+    switch (action) {
+    case CORE_TERMINAL: spawn(detect_terminal()); break;
+    case CORE_FILES: spawn_files_home(); break;
+    case CORE_SYSMON: tool_open(TOOL_SYSMON); break;
+    case CORE_SETTINGS: tool_open(TOOL_SETTINGS); break;
+    default: break;
+    }
 }
 
 /* ---------------------------------------------------------------- menus */
@@ -792,8 +895,8 @@ static void draw_desktop(void)
         /* generic SCos-ish 24x24 glyph: a framed box with the initial */
         int gx = x + 28, gy = y + 8;
         rect(root, gx, gy, 24, 24, PX.main);
-        char one[2] = { pins[i].label[0] ? pins[i].label[0] : '?', 0 };
-        text_out(root, gx + 8, gy + 8 + font->ascent, one, PX.main);
+        int gw = text_w(pins[i].glyph);
+        text_out(root, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
         clipped_text(root, x + 4, y + 40 + font->ascent, pins[i].label, 72, PX.text);
     }
 }
@@ -871,8 +974,8 @@ static void draw_bar(void)
             struct pin *p = &pins[it->idx];
             fill(bar_win, it->x, by, 34, bh, PX.taskbar_bg);
             rect(bar_win, it->x, by, 34, bh, PX.main);
-            char one[2] = { p->label[0] ? p->label[0] : '?', 0 };
-            text_out(bar_win, it->x + 13, by + 8 + font->ascent, one, PX.text);
+            int gw = text_w(p->glyph);
+            text_out(bar_win, it->x + (34 - gw) / 2, by + 8 + font->ascent, p->glyph, PX.text);
         } else {
             struct client *c = clients[it->idx];
             int foc = active_client == c;
@@ -908,7 +1011,7 @@ static void draw_launcher(void)
     XMoveResizeWindow(dpy, launch_win, 8, y, 300, h);
     fill(launch_win, 0, 0, 300, h, PX.win_bg);
     rect(launch_win, 0, 0, 300, h, PX.main);
-    text_out(launch_win, 10, 8 + font->ascent, "Apps: type to search / scroll", PX.main);
+    text_out(launch_win, 10, 8 + font->ascent, launch_q[0] ? "Search: core + installed apps" : "Core apps - type to search all", PX.main);
     rect(launch_win, 10, 26, 280, 20, PX.main);
     text_out(launch_win, 14, 30 + font->ascent, launch_q, PX.text);
     int caret_x = 14 + text_w(launch_q);
@@ -919,15 +1022,14 @@ static void draw_launcher(void)
     if (launch_sel >= launch_offset + rows) launch_offset = launch_sel - rows + 1;
     int yy = 56;
     for (int r = 0; r < rows && launch_offset + r < n; r++) {
-        int ai = launch_filtered[launch_offset + r];
+        struct launch_item *it = &launch_items[launch_offset + r];
         if (launch_offset + r == launch_sel) fill(launch_win, 6, yy - 3, 288, 22, PX.bar_hi);
-        char one[2] = { apps[ai].name[0], 0 };
-        text_out(launch_win, 12, yy + 4 + font->ascent, one, PX.main);
-        clipped_text(launch_win, 44, yy + 4 + font->ascent, apps[ai].name, 248,
+        text_out(launch_win, 12, yy + 4 + font->ascent, it->glyph, PX.main);
+        clipped_text(launch_win, 44, yy + 4 + font->ascent, it->name, 248,
                      launch_offset + r == launch_sel ? PX.title_text : PX.text);
         yy += 24;
     }
-    if (!n) text_out(launch_win, 14, yy + font->ascent, "(no matching app)", PX.title_off);
+    if (!n) text_out(launch_win, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
     XRaiseWindow(dpy, launch_win);
 }
 
@@ -966,8 +1068,8 @@ static void menu_open(int kind, int x, int y, Window target)
         menu_n = 6;
         for (int i = 0; i < menu_n; i++) snprintf(menu_labels[i], 64, "%s", items[i]);
     } else if (kind == MENU_DESKTOP) {
-        static const char *items[] = { "Open Terminal", "Open Files", "Open Web Browser",
-                                       "App Launcher", "Edit WM Config", "Restart WM", "Exit WM" };
+        static const char *items[] = { "Terminal", "Files", "SysMon", "Settings",
+                                       "App Launcher", "Restart WM", "Exit WM" };
         menu_n = 7;
         for (int i = 0; i < menu_n; i++) snprintf(menu_labels[i], 64, "%s", items[i]);
     } else {
@@ -1060,16 +1162,12 @@ static void menu_action(int idx)
         case 5: spawn("systemctl poweroff"); break;
         }
     } else if (kind == MENU_DESKTOP) {
-        char cmd[640];
         switch (idx) {
-        case 0: spawn(detect_terminal()); break;
-        case 1: spawn(detect_files()); break;
-        case 2: spawn("xdg-open https://duckduckgo.com"); break;
-        case 3: launcher_toggle(1); break;
-        case 4:
-            snprintf(cmd, sizeof(cmd), "%s -e %s ~/.config/scoswm/scoswm.conf",
-                     detect_terminal(), getenv("EDITOR") ? getenv("EDITOR") : "vi");
-            spawn(cmd); break;
+        case 0: run_core_action(CORE_TERMINAL); break;
+        case 1: run_core_action(CORE_FILES); break;
+        case 2: run_core_action(CORE_SYSMON); break;
+        case 3: run_core_action(CORE_SETTINGS); break;
+        case 4: launcher_toggle(1); break;
         case 5:
             while (nclients) remove_client(clients[0], 1);
             execvp("/proc/self/exe", saved_argv);
@@ -1122,6 +1220,11 @@ static void on_button(XButtonEvent *e)
         }
         else if (idx >= 0 && idx < menu_n) menu_action(idx);
         else menu_close();
+        return;
+    }
+    if (tool_kind != TOOL_NONE) {
+        if (w == tool_win) tool_button(e);
+        else tool_close();
         return;
     }
     if (launch_open && w != launch_win && w != bar_win) launcher_toggle(0);
@@ -1180,10 +1283,9 @@ static void on_button(XButtonEvent *e)
         int n = launch_rebuild();
         int idx = launch_offset + row;
         if (e->button == Button1 && idx >= 0 && idx < n) {
-            char cmd[1024];
-            launch_cmd_for(&apps[launch_filtered[idx]], cmd, sizeof(cmd));
+            struct launch_item it = launch_items[idx];
             launcher_toggle(0);
-            spawn(cmd);
+            launch_exec_item(&it);
         }
         return;
     }
@@ -1324,6 +1426,7 @@ static void on_key(XKeyEvent *e)
     KeySym ks = XLookupKeysym(e, 0);
     unsigned int mods = e->state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask);
 
+    if (tool_kind != TOOL_NONE) { tool_key(e); return; }
     if (menu_kind != MENU_NONE) {
         if (ks == XK_Escape) menu_close();
         return;
@@ -1333,10 +1436,9 @@ static void on_key(XKeyEvent *e)
         if (ks == XK_Escape) launcher_toggle(0);
         else if (ks == XK_Return) {
             if (n > 0) {
-                char cmd[1024];
-                launch_cmd_for(&apps[launch_filtered[launch_sel]], cmd, sizeof(cmd));
+                struct launch_item it = launch_items[launch_sel];
                 launcher_toggle(0);
-                spawn(cmd);
+                launch_exec_item(&it);
             }
         }
         else if (ks == XK_Down) { if (launch_sel < n - 1) launch_sel++; draw_launcher(); }
@@ -1369,6 +1471,8 @@ static void on_key(XKeyEvent *e)
     else if (mods == Mod4Mask && (ks == XK_Return || ks == XK_KP_Enter)) spawn(detect_terminal());
     else if (mods == Mod4Mask && (ks == XK_d || ks == XK_D)) launcher_toggle(1);
     else if (mods == Mod4Mask && (ks == XK_q || ks == XK_Q) && active_client) close_client(active_client);
+    else if (mods == Mod4Mask && (ks == XK_m || ks == XK_M)) tool_open(TOOL_SYSMON);
+    else if (mods == Mod4Mask && ks == XK_comma) tool_open(TOOL_SETTINGS);
 }
 
 static void grab_shortcuts(void)
@@ -1378,6 +1482,7 @@ static void grab_shortcuts(void)
         { XK_F4, Mod1Mask }, { XK_F10, Mod1Mask }, { XK_F9, Mod1Mask },
         { XK_Return, Mod4Mask }, { XK_d, Mod4Mask }, { XK_D, Mod4Mask },
         { XK_q, Mod4Mask }, { XK_Q, Mod4Mask },
+        { XK_m, Mod4Mask }, { XK_M, Mod4Mask }, { XK_comma, Mod4Mask },
     };
     /* also with CapsLock / NumLock latched */
     static const unsigned int extras[] = { 0, LockMask, Mod2Mask, LockMask | Mod2Mask };
@@ -1391,6 +1496,13 @@ static void grab_shortcuts(void)
 }
 
 /* --------------------------------------------------------------- config/pins */
+static void pin_set_glyph(struct pin *p, const char *glyph)
+{
+    if (glyph && *glyph) { snprintf(p->glyph, sizeof(p->glyph), "%s", glyph); return; }
+    p->glyph[0] = p->label[0] ? (char)toupper((unsigned char)p->label[0]) : 'A';
+    p->glyph[1] = 0;
+}
+
 static void build_pins(void)
 {
     npins = 0;
@@ -1401,13 +1513,35 @@ static void build_pins(void)
         char *end = tok + strlen(tok);
         while (end > tok && end[-1] == ' ') *--end = 0;
         if (!*tok) continue;
+
+        /* Removed non-core pseudo-apps are ignored rather than turned
+         * into dead taskbar buttons. */
+        if (!strcasecmp(tok, "web-browser") || !strcasecmp(tok, "browser")) continue;
+
         struct pin *p = &pins[npins];
         memset(p, 0, sizeof(*p));
-        /* 1) exact .desktop id match */
+
+        /* The four retained SCos core apps. */
+        int core = -1;
+        for (unsigned int i = 0; i < sizeof(core_apps) / sizeof(core_apps[0]); i++) {
+            const char *id = core_apps[i].action == CORE_TERMINAL ? "terminal" :
+                             core_apps[i].action == CORE_FILES ? "files" :
+                             core_apps[i].action == CORE_SYSMON ? "sysmon" : "settings";
+            if (!strcasecmp(tok, id) || !strcasecmp(tok, core_apps[i].name)) core = (int)i;
+        }
+        if (core >= 0) {
+            snprintf(p->label, sizeof(p->label), "%s", core_apps[core].name);
+            snprintf(p->glyph, sizeof(p->glyph), "%s", core_apps[core].glyph);
+            p->action = core_apps[core].action;
+            npins++;
+            continue;
+        }
+
+        /* Then a user's real .desktop applications. */
         int found = -1;
         for (int i = 0; i < napps; i++)
             if (!strcasecmp(apps[i].id, tok)) found = i;
-        if (found < 0)       /* 2) substring match on id or name */
+        if (found < 0)
             for (int i = 0; i < napps; i++)
                 if (ci_contains(apps[i].id, tok) || ci_contains(apps[i].name, tok)) { found = i; break; }
         if (found >= 0) {
@@ -1416,28 +1550,17 @@ static void build_pins(void)
             snprintf(p->command, sizeof(p->command), "%s", cmd);
             snprintf(p->label, sizeof(p->label), "%s", apps[found].name);
             snprintf(p->match, sizeof(p->match), "%s", apps[found].id);
+            pin_set_glyph(p, "");
             npins++;
             continue;
         }
-        /* 3) built-in pseudo-pins */
-        if (!strcasecmp(tok, "terminal")) {
-            snprintf(p->label, sizeof(p->label), "Terminal");
-            snprintf(p->command, sizeof(p->command), "%s", detect_terminal());
-            snprintf(p->match, sizeof(p->match), "%s", "terminal");
-        } else if (!strcasecmp(tok, "files")) {
-            snprintf(p->label, sizeof(p->label), "Files");
-            snprintf(p->command, sizeof(p->command), "%s", detect_files());
-            snprintf(p->match, sizeof(p->match), "%s", "files");
-        } else if (!strcasecmp(tok, "web-browser") || !strcasecmp(tok, "browser")) {
-            snprintf(p->label, sizeof(p->label), "Web Browser");
-            snprintf(p->command, sizeof(p->command), "xdg-open https://duckduckgo.com");
-            snprintf(p->match, sizeof(p->match), "%s", "browser");
-        } else {             /* 4) a bare command */
-            snprintf(p->label, sizeof(p->label), "%s", tok);
-            snprintf(p->command, sizeof(p->command), "%s", tok);
-            snprintf(p->match, sizeof(p->match), "%s", tok);
-            p->label[0] = (char)toupper((unsigned char)p->label[0]);
-        }
+
+        /* Finally, an explicit bare command from the user's own config. */
+        snprintf(p->label, sizeof(p->label), "%s", tok);
+        snprintf(p->command, sizeof(p->command), "%s", tok);
+        snprintf(p->match, sizeof(p->match), "%s", tok);
+        p->label[0] = (char)toupper((unsigned char)p->label[0]);
+        pin_set_glyph(p, "");
         npins++;
     }
 }
@@ -1501,6 +1624,427 @@ static void create_ui_windows(void)
     menu_win = XCreateWindow(dpy, root, 100, 100, 190, 100, 0,
                              CopyFromParent, InputOutput, CopyFromParent,
                              CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+    tool_win = XCreateWindow(dpy, root, 100, 100, TOOL_W, TOOL_H, 0,
+                             CopyFromParent, InputOutput, CopyFromParent,
+                             CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+}
+
+
+/* ------------------------------------------------------ core app panels */
+/* Settings and SysMon are deliberately the only built-in windows.
+ * They add no daemon and no background work: Settings only writes the
+ * existing config file, and SysMon only samples /proc + /sys while it
+ * is visible. Terminal and Files remain the user's real Linux programs. */
+static int settings_field;              /* 0 none, 1 terminal, 2 files, 3 pins */
+static char settings_edit[1024];
+static char settings_status[160];
+
+static struct {
+    double cpu_percent, load1, uptime_seconds;
+    struct linux_meminfo mem;
+    int processes, have_cpu_prev;
+    unsigned long long prev_idle, prev_total;
+    char hostname[128], kernel[256], gpu[256], temperature[96];
+} sysmon_state;
+
+static int read_small_file(const char *path, char *buf, int cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[n] = 0;
+    return 1;
+}
+
+static void ensure_parent_dirs(const char *path)
+{
+    char buf[512];
+    snprintf(buf, sizeof(buf), "%s", path);
+    for (char *p = buf + 1; *p; p++) {
+        if (*p == '/') { *p = 0; mkdir(buf, 0700); *p = '/'; }
+    }
+}
+
+static void save_settings(const char *what)
+{
+    ensure_parent_dirs(config_path);
+    if (config_save_file(config_path, &cfg))
+        snprintf(settings_status, sizeof(settings_status), "%s saved", what);
+    else
+        snprintf(settings_status, sizeof(settings_status), "Could not save %s", config_path);
+}
+
+static void redraw_everything(void)
+{
+    XSetWindowBackground(dpy, bar_win, PX.taskbar_bg);
+    XSetWindowBackground(dpy, launch_win, PX.win_bg);
+    XSetWindowBackground(dpy, menu_win, PX.win_bg);
+    XSetWindowBackground(dpy, tool_win, PX.win_bg);
+    for (int i = 0; i < nclients; i++) {
+        XSetWindowBackground(dpy, clients[i]->frame, PX.win_bg);
+        draw_frame(clients[i]);
+    }
+    draw_desktop();
+    draw_bar();
+    if (launch_open) draw_launcher();
+    if (menu_kind != MENU_NONE) draw_menu();
+}
+
+static void apply_theme_live(int idx)
+{
+    const struct scos_theme *t = theme_by_index(idx);
+    if (!t) return;
+    theme = *t;
+    snprintf(cfg.theme, sizeof(cfg.theme), "%s", t->id);
+    cfg.has_custom = 0;
+    apply_palette();
+    redraw_everything();
+    save_settings("Theme");
+}
+
+static void apply_bar_height_live(int v)
+{
+    if (v < 28) v = 28;
+    if (v > 64) v = 64;
+    cfg.bar_height = v;
+    bar_h = v;
+    XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
+    int x, y, w, h; work_area(&x, &y, &w, &h);
+    for (int i = 0; i < nclients; i++) {
+        struct client *c = clients[i];
+        if (c->maximized) {
+            c->x = x; c->y = y; c->w = w - 2; c->h = h - TOP_H - 1;
+            client_place(c); draw_frame(c);
+        }
+    }
+    recalc_struts();
+    redraw_everything();
+    save_settings("Taskbar height");
+}
+
+static char *settings_target(int field, size_t *cap)
+{
+    if (field == 1) { *cap = sizeof(cfg.terminal); return cfg.terminal; }
+    if (field == 2) { *cap = sizeof(cfg.files); return cfg.files; }
+    if (field == 3) { *cap = sizeof(cfg.pins); return cfg.pins; }
+    return NULL;
+}
+
+static void start_settings_field(int field)
+{
+    size_t cap = 0;
+    char *target = settings_target(field, &cap);
+    if (!target) return;
+    settings_field = field;
+    snprintf(settings_edit, sizeof(settings_edit), "%s", target);
+    snprintf(settings_status, sizeof(settings_status), "Editing - Enter saves, Esc cancels");
+}
+
+static void commit_settings_field(void)
+{
+    size_t cap = 0;
+    char *target = settings_target(settings_field, &cap);
+    if (!target) { settings_field = 0; return; }
+    char *s = settings_edit;
+    while (*s == ' ' || *s == '\t') s++;
+    char *e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
+    snprintf(target, cap, "%s", s);
+    int was_pins = settings_field == 3;
+    settings_field = 0;
+    if (was_pins) { build_pins(); desk_sel_mask = 0; redraw_everything(); }
+    save_settings("Settings");
+}
+
+static void detect_gpu_info(void)
+{
+    char buf[1024];
+    sysmon_state.gpu[0] = 0;
+    if (read_small_file("/proc/driver/nvidia/version", buf, sizeof(buf))) {
+        const char *v = strstr(buf, "Kernel Module");
+        if (v) {
+            v += strlen("Kernel Module");
+            while (*v == ' ' || *v == '\t') v++;
+            char version[32]; int i = 0;
+            while (v[i] && v[i] != ' ' && v[i] != '\t' && v[i] != '\n' && i < (int)sizeof(version) - 1) {
+                version[i] = v[i]; i++;
+            }
+            version[i] = 0;
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "NVIDIA proprietary %s", version);
+        } else snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "NVIDIA proprietary");
+        return;
+    }
+    for (int card = 0; card < 4; card++) {
+        char linkpath[96], target[256];
+        snprintf(linkpath, sizeof(linkpath), "/sys/class/drm/card%d/device/driver", card);
+        ssize_t n = readlink(linkpath, target, sizeof(target) - 1);
+        if (n <= 0) continue;
+        target[n] = 0;
+        const char *driver = strrchr(target, '/');
+        driver = driver ? driver + 1 : target;
+        if (!strcmp(driver, "nouveau")) {
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "NVIDIA GPU - nouveau (DRM/KMS, card%d)", card);
+            return;
+        }
+        if (!strcmp(driver, "nvidia")) {
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "NVIDIA GPU - proprietary driver (card%d)", card);
+            return;
+        }
+        if (!sysmon_state.gpu[0])
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU driver: %s (card%d)", driver, card);
+    }
+    if (sysmon_state.gpu[0]) return;
+    snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU: no DRM driver exposed in /sys");
+}
+
+static void detect_temperature(void)
+{
+    sysmon_state.temperature[0] = 0;
+    DIR *root_dir = opendir("/sys/class/hwmon");
+    if (!root_dir) { snprintf(sysmon_state.temperature, sizeof(sysmon_state.temperature), "Temperature: unavailable"); return; }
+    struct dirent *entry;
+    while ((entry = readdir(root_dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        char path[512], name[96] = "", value[64] = "";
+        snprintf(path, sizeof(path), "/sys/class/hwmon/%s/name", entry->d_name);
+        if (!read_small_file(path, name, sizeof(name))) continue;
+        char *nl = strchr(name, '\n'); if (nl) *nl = 0;
+        if (!strstr(name, "nvidia") && !strstr(name, "nouveau") && !strstr(name, "coretemp") &&
+            !strstr(name, "k10temp") && !strstr(name, "zenpower") && !strstr(name, "amdgpu")) continue;
+        snprintf(path, sizeof(path), "/sys/class/hwmon/%s/temp1_input", entry->d_name);
+        if (!read_small_file(path, value, sizeof(value))) continue;
+        long milli = strtol(value, NULL, 10);
+        if (milli > 0) {
+            snprintf(sysmon_state.temperature, sizeof(sysmon_state.temperature), "%s: %.1f C", name, milli / 1000.0);
+            break;
+        }
+    }
+    closedir(root_dir);
+    if (!sysmon_state.temperature[0])
+        snprintf(sysmon_state.temperature, sizeof(sysmon_state.temperature), "Temperature: no supported sensor exposed");
+}
+
+static void refresh_sysmon(void)
+{
+    char buf[8192];
+    if (read_small_file("/proc/stat", buf, sizeof(buf))) {
+        unsigned long long idle = 0, total = 0;
+        if (parse_cpu_stat_text(buf, &idle, &total)) {
+            if (sysmon_state.have_cpu_prev && total > sysmon_state.prev_total) {
+                unsigned long long dt = total - sysmon_state.prev_total;
+                unsigned long long di = idle - sysmon_state.prev_idle;
+                sysmon_state.cpu_percent = dt ? 100.0 * (1.0 - (double)di / (double)dt) : 0;
+            }
+            sysmon_state.prev_idle = idle; sysmon_state.prev_total = total;
+            sysmon_state.have_cpu_prev = 1;
+        }
+    }
+    if (read_small_file("/proc/meminfo", buf, sizeof(buf)))
+        parse_meminfo_text(buf, &sysmon_state.mem);
+    if (read_small_file("/proc/loadavg", buf, sizeof(buf)))
+        parse_loadavg_text(buf, &sysmon_state.load1, &sysmon_state.processes);
+    if (read_small_file("/proc/uptime", buf, sizeof(buf)))
+        sysmon_state.uptime_seconds = strtod(buf, NULL);
+    gethostname(sysmon_state.hostname, sizeof(sysmon_state.hostname) - 1);
+    struct utsname un;
+    if (uname(&un) == 0)
+        snprintf(sysmon_state.kernel, sizeof(sysmon_state.kernel), "%s %s (%s)", un.sysname, un.release, un.machine);
+    else snprintf(sysmon_state.kernel, sizeof(sysmon_state.kernel), "Linux");
+    detect_gpu_info();
+    detect_temperature();
+}
+
+static void tool_close(void)
+{
+    if (tool_kind == TOOL_NONE) return;
+    tool_kind = TOOL_NONE;
+    settings_field = 0;
+    XUnmapWindow(dpy, tool_win);
+    XUngrabKeyboard(dpy, CurrentTime);
+}
+
+static void tool_open(int kind)
+{
+    menu_close();
+    if (launch_open) launcher_toggle(0);
+    tool_kind = kind;
+    settings_field = 0;
+    if (kind == TOOL_SYSMON) refresh_sysmon();
+    int x = (screen_w - TOOL_W) / 2, y = (screen_h - bar_h - TOOL_H) / 2;
+    if (x < 4) x = 4;
+    if (y < 4) y = 4;
+    XMoveResizeWindow(dpy, tool_win, x, y, TOOL_W, TOOL_H);
+    XMapWindow(dpy, tool_win);
+    XRaiseWindow(dpy, tool_win);
+    XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+    draw_tool();
+}
+
+static void draw_meter(const char *label, double frac, const char *value, int y)
+{
+    if (frac < 0) frac = 0;
+    if (frac > 1) frac = 1;
+    text_out(tool_win, 16, y + font->ascent, label, PX.text);
+    rect(tool_win, 112, y, 300, 16, PX.main);
+    fill(tool_win, 113, y + 1, (int)(298 * frac), 14, PX.main);
+    text_out(tool_win, 424, y + font->ascent, value, PX.text);
+}
+
+static void draw_tool(void)
+{
+    if (tool_kind == TOOL_NONE) return;
+    fill(tool_win, 0, 0, TOOL_W, TOOL_H, PX.win_bg);
+    rect(tool_win, 0, 0, TOOL_W, TOOL_H, PX.main);
+    fill(tool_win, 1, 1, TOOL_W - 2, 25, PX.main);
+    text_out(tool_win, 10, 6 + font->ascent, tool_kind == TOOL_SETTINGS ? "Settings" : "SysMon", PX.title_text);
+    draw_button_glyph(tool_win, TOOL_W - 27, 4, 2, PX.title_text);
+
+    if (tool_kind == TOOL_SYSMON) {
+        char value[64];
+        snprintf(value, sizeof(value), "%.0f%%", sysmon_state.cpu_percent);
+        draw_meter("CPU", sysmon_state.cpu_percent / 100.0, value, 48);
+        unsigned long used = sysmon_state.mem.total_kb > sysmon_state.mem.available_kb ?
+            sysmon_state.mem.total_kb - sysmon_state.mem.available_kb : 0;
+        double mem_frac = sysmon_state.mem.total_kb ? (double)used / sysmon_state.mem.total_kb : 0;
+        snprintf(value, sizeof(value), "%.0f%%", mem_frac * 100.0);
+        draw_meter("Memory", mem_frac, value, 82);
+        unsigned long swap_used = sysmon_state.mem.swap_total_kb > sysmon_state.mem.swap_free_kb ?
+            sysmon_state.mem.swap_total_kb - sysmon_state.mem.swap_free_kb : 0;
+        double swap_frac = sysmon_state.mem.swap_total_kb ? (double)swap_used / sysmon_state.mem.swap_total_kb : 0;
+        snprintf(value, sizeof(value), "%.0f%%", swap_frac * 100.0);
+        draw_meter("Swap", swap_frac, value, 116);
+
+        char line[512];
+        int y = 164;
+        snprintf(line, sizeof(line), "Host: %s", sysmon_state.hostname);
+        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        snprintf(line, sizeof(line), "Kernel: %s", sysmon_state.kernel);
+        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        unsigned long secs = (unsigned long)sysmon_state.uptime_seconds;
+        snprintf(line, sizeof(line), "Uptime: %lud %02luh %02lum    Load: %.2f    Processes: %d",
+                 secs / 86400, (secs / 3600) % 24, (secs / 60) % 60,
+                 sysmon_state.load1, sysmon_state.processes);
+        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        snprintf(line, sizeof(line), "RAM: %.1f / %.1f GiB    Swap: %.1f / %.1f GiB",
+                 used / 1048576.0, sysmon_state.mem.total_kb / 1048576.0,
+                 swap_used / 1048576.0, sysmon_state.mem.swap_total_kb / 1048576.0);
+        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        snprintf(line, sizeof(line), "GPU: %s", sysmon_state.gpu);
+        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(tool_win, 16, y, sysmon_state.temperature, 508, PX.text);
+        text_out(tool_win, 16, TOOL_H - 18, "Live from /proc and /sys - refreshes only while open - Esc closes", PX.title_off);
+        return;
+    }
+
+    /* Settings */
+    text_out(tool_win, 16, 48 + font->ascent, "Theme", PX.main);
+    for (int i = 0; i < scos_theme_count; i++) {
+        int x = 16 + i * 128, y = 62;
+        int selected = !strcmp(cfg.theme, scos_themes[i].id);
+        fill(tool_win, x, y, 120, 40, selected ? PX.bar_hi : PX.win_bg);
+        rect(tool_win, x, y, 120, 40, PX.main);
+        int tw = text_w(scos_themes[i].name);
+        text_out(tool_win, x + (120 - tw) / 2, y + 14 + font->ascent, scos_themes[i].name,
+                 selected ? PX.title_text : PX.text);
+    }
+
+    static const char *labels[4] = { "", "Terminal", "Files", "Pins" };
+    for (int field = 1; field <= 3; field++) {
+        int y = 124 + (field - 1) * 44;
+        text_out(tool_win, 16, y + 9 + font->ascent, labels[field], PX.main);
+        fill(tool_win, 100, y, 424, 30, PX.win_bg);
+        rect(tool_win, 100, y, 424, 30, settings_field == field ? PX.title_text : PX.main);
+        char shown[1056];
+        size_t cap = 0; char *target = settings_target(field, &cap); (void)cap;
+        if (settings_field == field) snprintf(shown, sizeof(shown), "%s", settings_edit);
+        else if (target && target[0]) snprintf(shown, sizeof(shown), "%s", target);
+        else if (field == 1) snprintf(shown, sizeof(shown), "(auto: %s)", detect_terminal());
+        else if (field == 2) {
+            const char *e = detect_files_exec();
+            snprintf(shown, sizeof(shown), "(auto: %s)", e ? e : "xdg-open");
+        } else snprintf(shown, sizeof(shown), "%s", cfg.pins);
+        clipped_text(tool_win, 108, y + 9 + font->ascent, shown, 390, PX.text);
+        if (settings_field == field && (time(NULL) % 2) == 0) {
+            int cx = 108 + text_w(settings_edit);
+            if (cx < 518) fill(tool_win, cx, y + 8, 2, 14, PX.main);
+        }
+    }
+
+    text_out(tool_win, 16, 268 + font->ascent, "Taskbar", PX.main);
+    rect(tool_win, 100, 256, 34, 30, PX.main);
+    text_out(tool_win, 112, 265 + font->ascent, "-", PX.text);
+    char bh[32]; snprintf(bh, sizeof(bh), "%d px", cfg.bar_height);
+    text_out(tool_win, 146, 265 + font->ascent, bh, PX.text);
+    rect(tool_win, 204, 256, 34, 30, PX.main);
+    text_out(tool_win, 216, 265 + font->ascent, "+", PX.text);
+
+    clipped_text(tool_win, 16, 316, settings_status[0] ? settings_status :
+                 "Theme and taskbar apply immediately. Click a field to edit it.", 508, PX.text);
+    text_out(tool_win, 16, TOOL_H - 18, "Single workspace by design - no pager or workspace daemon", PX.title_off);
+}
+
+static int tool_button(XButtonEvent *e)
+{
+    if (e->type != ButtonPress || e->button != Button1) return 1;
+    if (e->x >= TOOL_W - 30 && e->y < 28) { tool_close(); return 1; }
+    if (tool_kind == TOOL_SETTINGS) {
+        if (e->y >= 62 && e->y < 102) {
+            for (int i = 0; i < scos_theme_count; i++) {
+                int x = 16 + i * 128;
+                if (e->x >= x && e->x < x + 120) { apply_theme_live(i); draw_tool(); return 1; }
+            }
+        }
+        for (int field = 1; field <= 3; field++) {
+            int y = 124 + (field - 1) * 44;
+            if (e->x >= 100 && e->x < 524 && e->y >= y && e->y < y + 30) {
+                start_settings_field(field); draw_tool(); return 1;
+            }
+        }
+        if (e->y >= 256 && e->y < 286 && e->x >= 100 && e->x < 134) {
+            apply_bar_height_live(cfg.bar_height - 4); draw_tool(); return 1;
+        }
+        if (e->y >= 256 && e->y < 286 && e->x >= 204 && e->x < 238) {
+            apply_bar_height_live(cfg.bar_height + 4); draw_tool(); return 1;
+        }
+    }
+    return 1;
+}
+
+static int tool_key(XKeyEvent *e)
+{
+    KeySym ks = XLookupKeysym(e, 0);
+    if (tool_kind == TOOL_SYSMON) {
+        if (ks == XK_Escape || ks == XK_q || ks == XK_Q) tool_close();
+        return 1;
+    }
+    if (tool_kind != TOOL_SETTINGS) return 1;
+    if (settings_field) {
+        if (ks == XK_Return || ks == XK_KP_Enter) { commit_settings_field(); draw_tool(); return 1; }
+        if (ks == XK_Escape) { settings_field = 0; snprintf(settings_status, sizeof(settings_status), "Edit cancelled"); draw_tool(); return 1; }
+        if (ks == XK_BackSpace) {
+            size_t n = strlen(settings_edit);
+            if (n) settings_edit[n - 1] = 0;
+            draw_tool(); return 1;
+        }
+        if (ks == XK_Tab) {
+            int next = settings_field % 3 + 1;
+            commit_settings_field(); start_settings_field(next); draw_tool(); return 1;
+        }
+        char buf[16];
+        int m = XLookupString(e, buf, sizeof(buf), NULL, NULL);
+        for (int i = 0; i < m; i++) {
+            if (buf[i] >= 32 && buf[i] < 127 && strlen(settings_edit) < sizeof(settings_edit) - 1) {
+                size_t n = strlen(settings_edit);
+                settings_edit[n] = buf[i]; settings_edit[n + 1] = 0;
+            }
+        }
+        draw_tool();
+        return 1;
+    }
+    if (ks == XK_Escape) tool_close();
+    else if (ks == XK_Tab) { start_settings_field(1); draw_tool(); }
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -1514,7 +2058,8 @@ int main(int argc, char **argv)
                    "config: $XDG_CONFIG_HOME/scoswm/scoswm.conf\n"
                    "keys: Alt+Tab cycle, Alt+F4 close, Alt+F10 maximise,\n"
                    "      Alt+F9 minimise, Super+Enter terminal, Super+D launcher,\n"
-                   "      Super+Q close, Alt+drag move/resize\n",
+                   "      Super+M SysMon, Super+comma Settings, Super+Q close,\n"
+                   "      Alt+drag move/resize\n",
                    VERSION);
             return 0;
         }
@@ -1736,6 +2281,7 @@ int main(int argc, char **argv)
                     else if (ev.xexpose.window == bar_win) draw_bar();
                     else if (ev.xexpose.window == launch_win) draw_launcher();
                     else if (ev.xexpose.window == menu_win) draw_menu();
+                    else if (ev.xexpose.window == tool_win) draw_tool();
                     else {
                         struct client *c = find_client(ev.xexpose.window);
                         if (c) draw_frame(c);
@@ -1752,7 +2298,11 @@ int main(int argc, char **argv)
         struct timeval tv = { 0, 250000 };
         if (select(fd + 1, &rf, NULL, NULL, &tv) == 0) {
             time_t now = time(NULL);
-            if (now != last_clock) { last_clock = now; draw_bar(); }
+            if (now != last_clock) {
+                last_clock = now; draw_bar();
+                if (tool_kind == TOOL_SYSMON) { refresh_sysmon(); draw_tool(); }
+                else if (tool_kind == TOOL_SETTINGS && settings_field) draw_tool();
+            }
         }
         if (!running) break;
     }

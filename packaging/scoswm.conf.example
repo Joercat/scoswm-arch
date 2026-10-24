@@ -17,18 +17,18 @@ theme = matrix-1
 
 # Programs. Empty terminal/files = auto-detect
 # (alacritty, kitty, st, xfce4-terminal, gnome-terminal, konsole,
-# foot, xterm / thunar, pcmanfm, nautilus, dolphin, nemo).
+# xterm / thunar, pcmanfm, nautilus, dolphin, nemo).
 terminal =
 files =
 
 # X core font for decorations.
 # font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso8859-1
 
-# Taskbar pins + desktop icons: comma-separated .desktop ids
-# (from /usr/share/applications, ~/.local/share/applications),
-# app names, the pseudo-pins terminal/files/web-browser, or bare
-# commands.
-pins = terminal, files, web-browser
+# Taskbar pins + desktop icons. The retained SCos core apps are
+# terminal, files, sysmon and settings. You may also use .desktop ids
+# or app names from the standard applications directories, or a bare
+# command from your own config.
+pins = terminal, files, sysmon, settings
 
 # Taskbar height (SCos used 40).
 bar_height = 40

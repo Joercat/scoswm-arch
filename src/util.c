@@ -61,7 +61,7 @@ void config_defaults(struct scos_config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
     strcpy(cfg->theme, "matrix-1");
-    strcpy(cfg->pins, "terminal,files,web-browser");
+    strcpy(cfg->pins, "terminal,files,sysmon,settings");
     cfg->bar_height = 40;
 }
 
@@ -118,6 +118,28 @@ int config_load_file(const char *path, struct scos_config *cfg)
     fclose(f);
     if (cfg->has_custom) strcpy(cfg->theme, "custom");
     return applied;
+}
+
+int config_save_file(const char *path, const struct scos_config *cfg)
+{
+    FILE *f = fopen(path, "w");
+    if (!f) return 0;
+    fprintf(f, "# scoswm configuration\n");
+    fprintf(f, "theme = %s\n", cfg->theme[0] ? cfg->theme : "matrix-1");
+    if (cfg->has_custom) {
+        static const char *const names[7] = {
+            "main", "bg_top", "bg_bot", "win_bg", "text", "title_text", "taskbar_bg"
+        };
+        for (int i = 0; i < 7; i++)
+            if (cfg->custom[i]) fprintf(f, "%s = #%06X\n", names[i], cfg->custom[i]);
+    }
+    fprintf(f, "terminal = %s\n", cfg->terminal);
+    fprintf(f, "files = %s\n", cfg->files);
+    fprintf(f, "font = %s\n", cfg->font);
+    fprintf(f, "pins = %s\n", cfg->pins);
+    fprintf(f, "bar_height = %d\n", cfg->bar_height);
+    int ok = fclose(f) == 0;
+    return ok;
 }
 
 void theme_apply_custom(struct scos_theme *out, const struct scos_config *cfg)
@@ -263,4 +285,62 @@ void utf8_to_latin1(const char *in, char *out, int cap)
         else out[o++] = '?';
     }
     out[o] = 0;
+}
+
+
+/* ---------------------------------------------------------- Linux data */
+static int meminfo_value(const char *text, const char *key, unsigned long *out)
+{
+    const char *p = strstr(text, key);
+    if (!p) return 0;
+    p += strlen(key);
+    while (*p == ' ' || *p == '\t' || *p == ':') p++;
+    char *end = NULL;
+    unsigned long v = strtoul(p, &end, 10);
+    if (end == p) return 0;
+    *out = v;
+    return 1;
+}
+
+int parse_meminfo_text(const char *text, struct linux_meminfo *out)
+{
+    if (!text || !out) return 0;
+    memset(out, 0, sizeof(*out));
+    int ok = meminfo_value(text, "MemTotal", &out->total_kb);
+    ok &= meminfo_value(text, "MemAvailable", &out->available_kb);
+    meminfo_value(text, "SwapTotal", &out->swap_total_kb);
+    meminfo_value(text, "SwapFree", &out->swap_free_kb);
+    return ok && out->total_kb > 0;
+}
+
+int parse_cpu_stat_text(const char *text, unsigned long long *idle,
+                        unsigned long long *total)
+{
+    if (!text || !idle || !total) return 0;
+    const char *p = text;
+    if (strncmp(p, "cpu ", 4) && strncmp(p, "cpu\t", 4)) {
+        p = strstr(text, "\ncpu ");
+        if (!p) return 0;
+        p++;
+    }
+    unsigned long long v[10] = { 0 };
+    int n = sscanf(p, "cpu %llu %llu %llu %llu %llu %llu %llu %llu %llu %llu",
+                   &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9]);
+    if (n < 5) return 0;
+    *idle = v[3] + v[4];
+    *total = 0;
+    for (int i = 0; i < 8 && i < n; i++) *total += v[i];
+    return *total > 0;
+}
+
+int parse_loadavg_text(const char *text, double *load1, int *processes)
+{
+    if (!text) return 0;
+    double one = 0, two = 0, three = 0;
+    int running = 0, total = 0;
+    if (sscanf(text, "%lf %lf %lf %d/%d", &one, &two, &three, &running, &total) < 4)
+        return 0;
+    if (load1) *load1 = one;
+    if (processes) *processes = total;
+    return 1;
 }

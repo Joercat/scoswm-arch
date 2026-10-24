@@ -58,6 +58,7 @@ int main(void)
     struct scos_config cfg;
     config_defaults(&cfg);
     CHECK(!strcmp(cfg.theme, "matrix-1") && cfg.bar_height == 40);
+    CHECK(!strcmp(cfg.pins, "terminal,files,sysmon,settings"));
 
     snprintf(path, sizeof(path), "%s/scoswm.conf", dir);
     write_file(path,
@@ -84,6 +85,33 @@ int main(void)
     theme_apply_custom(&custom, &cfg);
     CHECK(custom.main == 0x112233 && custom.bg_top == 0x445566);
     CHECK(custom.bg_bot == 0x000800);   /* unset fields inherit the Matrix base */
+
+    /* saved config round-trips through the loader */
+    config_defaults(&cfg);
+    strcpy(cfg.theme, "blue-sky");
+    strcpy(cfg.terminal, "alacritty");
+    strcpy(cfg.pins, "terminal,files,sysmon,settings,firefox");
+    cfg.bar_height = 44;
+    snprintf(path, sizeof(path), "%s/saved.conf", dir);
+    CHECK(config_save_file(path, &cfg));
+    config_defaults(&cfg);
+    CHECK(config_load_file(path, &cfg) >= 4);
+    CHECK(!strcmp(cfg.theme, "blue-sky") && !strcmp(cfg.terminal, "alacritty"));
+    CHECK(cfg.bar_height == 44 && strstr(cfg.pins, "sysmon") != NULL);
+
+    /* Linux /proc parsers used by SysMon */
+    struct linux_meminfo mem;
+    CHECK(parse_meminfo_text("MemTotal:       16384000 kB\nMemFree:         1024000 kB\n"
+                             "MemAvailable:    8192000 kB\nSwapTotal:       2097152 kB\n"
+                             "SwapFree:        1048576 kB\n", &mem));
+    CHECK(mem.total_kb == 16384000 && mem.available_kb == 8192000);
+    CHECK(mem.swap_total_kb == 2097152 && mem.swap_free_kb == 1048576);
+    unsigned long long idle = 0, total = 0;
+    CHECK(parse_cpu_stat_text("cpu  100 0 100 800 50 0 0 0 0 0\n", &idle, &total));
+    CHECK(idle == 850 && total == 1050);
+    double load = 0; int procs = 0;
+    CHECK(parse_loadavg_text("0.25 0.50 0.75 2/345 1234\n", &load, &procs));
+    CHECK(load == 0.25 && procs == 345);
 
     /* .desktop parsing */
     snprintf(path, sizeof(path), "%s/foo.desktop", dir);
