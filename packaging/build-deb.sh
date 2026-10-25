@@ -45,7 +45,7 @@ Priority: optional
 Architecture: $arch
 Maintainer: Joe <167563398+Joercat@users.noreply.github.com>
 Depends: $shlibs, bash, xfonts-base
-Recommends: xserver-xorg-core, xinit, xdg-utils, dbus-x11, libxcursor1
+Recommends: xserver-xorg-core, xinit, xdg-utils, dbus-x11, libxcursor1, libgdk-pixbuf-2.0-0, librsvg2-common
 Suggests: sddm, slock | i3lock | suckless-tools, thunar | pcmanfm | nautilus | dolphin | nemo
 Installed-Size: $installed_size
 Homepage: https://github.com/Joercat/scoswm-arch

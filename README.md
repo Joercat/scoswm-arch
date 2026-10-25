@@ -44,11 +44,12 @@ the normal config file.
 - **Wayland programs still work** through XWayland, which every major
   toolkit supports.
 
-The shared-library runtime dependencies are `libX11` and zlib (the
+The hard shared-library runtime dependencies are `libX11` and zlib (the
 latter is used to decode standard PNG app icons) — on Debian those are
 the `libx11-6`/`zlib1g` packages, pulled in automatically by the `.deb`.
-The terminal uses the system's PTY support and Bash; no Konsole, VTE, or
-other terminal-emulation library is embedded or required.
+SVG icon support is optional through the recommended gdk-pixbuf/librsvg
+packages. The terminal uses the system's PTY support and Bash; no Konsole,
+VTE, or other terminal-emulation library is embedded or required.
 
 ## Install
 
@@ -141,11 +142,13 @@ startx
 
 Desktop, taskbar and launcher icons are the apps' real
 `Icon=` images, resolved from the freedesktop icon theme and
-`/usr/share/pixmaps` (PNG/XPM) at the normal small sizes — 24 px on
-the desktop, 20 px in taskbar pins and 16 px beside running-window
-titles. Icons are decoded once and cached as X pixmaps; an app with no
-readable PNG/XPM icon keeps the SCos letter-glyph fallback rather than
-growing the layout.
+`/usr/share/pixmaps` at the normal small sizes — 24 px on
+the desktop, up to 20 px in taskbar pins and 16 px beside running-window
+titles (smaller automatically when the taskbar is shortened). PNG and XPM
+are decoded directly; SVG themes such as Breeze use the recommended
+`gdk-pixbuf`/`librsvg` loader when installed. Icons are decoded once and
+cached as X pixmaps; only an app with no readable image keeps the SCos
+letter-glyph fallback rather than growing the layout.
 
 The launcher's normal view is deliberately curated to the four core
 apps plus your pins. Once you type, it searches installed apps too,
@@ -182,9 +185,11 @@ Bash's normal `Ctrl+T` and `Ctrl+W` editing keys are deliberately left
 for the shell. Fullscreen applications receive their mouse input;
 holding Shift bypasses that for terminal selection/scrolling.
 
-The package also installs `/usr/share/applications/scos-terminal.desktop`,
-so **SCos Terminal** appears in KDE, GNOME, and other application menus
-and works independently of SCosWM. Direct command-line use is:
+The package also installs `/usr/share/applications/scos-terminal.desktop`
+and dedicated `scos-terminal` hicolor icons (16–256 px), with a KDE
+`StartupWMClass` mapping, so **SCos Terminal** appears with its own identity
+in KDE, GNOME, and other application menus and works independently of
+SCosWM. It inherits the session's themed cursor. Direct command-line use is:
 
 ```sh
 scos-terminal                         # interactive Bash
@@ -251,7 +256,12 @@ without needing an X server. When Xvfb is available, it also boots the
 WM, manages a real Xlib client
 (`tests/testclient.c`) and verifies adoption through the window tree
 (`tests/xprobe.c`). Without any X server the integration step reports
-SKIP.
+SKIP. `tests/run_graphical.sh` additionally runs headless graphical
+regressions when a `node-x11` checkout with `lib/xserver` is available:
+set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry,
+28 px taskbar bounds, close hover, dock stacking, single-press window
+activation, resize-free minimise/restore, the dedicated terminal icon,
+cursor inheritance, and buffered terminal resize/move behavior.
 
 `PORTING.md` documents how each piece of the SCos desktop maps onto
 this WM and where real-application behaviour necessarily differs.

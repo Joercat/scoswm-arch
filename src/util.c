@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <dirent.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -651,10 +652,67 @@ static int xpm_load(FILE *f, struct rgba_image *out)
     return 1;
 }
 
+/* SVG is optional: use the desktop's gdk-pixbuf loader when present
+ * (its normal librsvg loader handles SVG), without adding a toolkit or
+ * a hard dependency to the WM. PNG and XPM stay on the small decoders
+ * above. The scaled decode is bounded because icons are cached at small
+ * sizes and never need a multi-thousand-pixel intermediate. */
+static int pixbuf_image_load(const char *path, struct rgba_image *out)
+{
+    typedef void *(*new_scaled_fn)(const char *, int, int, int, void **);
+    typedef int (*get_int_fn)(void *);
+    typedef unsigned char *(*get_pixels_fn)(void *);
+    typedef void (*unref_fn)(void *);
+    void *gdk = dlopen("libgdk_pixbuf-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+    if (!gdk) return 0;
+    void *gobj = dlopen("libgobject-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+    new_scaled_fn new_scaled = (new_scaled_fn)dlsym(gdk, "gdk_pixbuf_new_from_file_at_scale");
+    get_int_fn get_width = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_width");
+    get_int_fn get_height = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_height");
+    get_int_fn get_channels = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_n_channels");
+    get_int_fn get_rowstride = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_rowstride");
+    get_pixels_fn get_pixels = (get_pixels_fn)dlsym(gdk, "gdk_pixbuf_get_pixels");
+    unref_fn unref = gobj ? (unref_fn)dlsym(gobj, "g_object_unref") : NULL;
+    if (!new_scaled || !get_width || !get_height || !get_channels ||
+        !get_rowstride || !get_pixels || !unref) {
+        if (gobj) dlclose(gobj);
+        dlclose(gdk);
+        return 0;
+    }
+    void *pixbuf = new_scaled(path, 256, 256, 1, NULL);
+    int ok = 0;
+    if (pixbuf) {
+        int w = get_width(pixbuf), h = get_height(pixbuf);
+        int channels = get_channels(pixbuf), stride = get_rowstride(pixbuf);
+        unsigned char *src = get_pixels(pixbuf);
+        if (w > 0 && h > 0 && w <= 256 && h <= 256 &&
+            (channels == 3 || channels == 4) && stride >= w * channels && src) {
+            unsigned char *rgba = malloc((size_t)w * h * 4);
+            if (rgba) {
+                for (int y = 0; y < h; y++) {
+                    for (int x = 0; x < w; x++) {
+                        unsigned char *s = src + (size_t)y * stride + (size_t)x * channels;
+                        unsigned char *d = rgba + ((size_t)y * w + x) * 4;
+                        d[0] = s[0]; d[1] = s[1]; d[2] = s[2];
+                        d[3] = channels == 4 ? s[3] : 255;
+                    }
+                }
+                out->w = w; out->h = h; out->pixels = rgba;
+                ok = 1;
+            }
+        }
+        unref(pixbuf);
+    }
+    dlclose(gobj);
+    dlclose(gdk);
+    return ok;
+}
+
 static int has_supported_ext(const char *path)
 {
     const char *dot = strrchr(path, '.');
-    return dot && (!strcasecmp(dot, ".png") || !strcasecmp(dot, ".xpm"));
+    return dot && (!strcasecmp(dot, ".png") || !strcasecmp(dot, ".xpm") ||
+                   !strcasecmp(dot, ".svg"));
 }
 
 int rgba_image_load(const char *path, struct rgba_image *out)
@@ -667,7 +725,9 @@ int rgba_image_load(const char *path, struct rgba_image *out)
     size_t got = fread(magic, 1, 8, f);
     fseek(f, 0, SEEK_SET);
     int ok = 0;
-    if (got == 8 && !memcmp(magic, "\x89PNG\r\n\x1a\n", 8)) ok = png_load(f, out);
+    const char *dot = strrchr(path, '.');
+    if (dot && !strcasecmp(dot, ".svg")) ok = pixbuf_image_load(path, out);
+    else if (got == 8 && !memcmp(magic, "\x89PNG\r\n\x1a\n", 8)) ok = png_load(f, out);
     else ok = xpm_load(f, out);
     fclose(f);
     if (!ok) rgba_image_free(out);
@@ -681,7 +741,7 @@ static int try_icon_file(const char *path, char *out, int cap)
     if (!file_exists(path)) return 0;
     if (has_supported_ext(path)) { snprintf(out, cap, "%s", path); return 1; }
     char buf[1024];
-    const char *exts[] = { ".png", ".xpm", NULL };
+    const char *exts[] = { ".png", ".xpm", ".svg", NULL };
     for (int i = 0; exts[i]; i++) {
         snprintf(buf, sizeof(buf), "%s%s", path, exts[i]);
         if (file_exists(buf)) { snprintf(out, cap, "%s", buf); return 1; }
@@ -722,7 +782,7 @@ int icon_resolve_in(const char *icon, const char *const *roots, int nroots,
         for (int j = 0; j < nsizes; j++) if (sizes[j] == wanted[i]) seen = 1;
         if (!seen) sizes[nsizes++] = wanted[i];
     }
-    const char *exts[] = { ".png", ".xpm", NULL };
+    const char *exts[] = { ".png", ".xpm", ".svg", NULL };
 
     for (int r = 0; r < nroots; r++) {
         const char *rootp = roots[r];

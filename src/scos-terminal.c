@@ -8,7 +8,6 @@
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/Xatom.h>
-#include <X11/cursorfont.h>
 #include <X11/keysym.h>
 
 #include <ctype.h>
@@ -29,7 +28,7 @@
 #include <unistd.h>
 
 #ifndef VERSION
-#define VERSION "0.5.0"
+#define VERSION "0.5.1"
 #endif
 #define TAB_H 22
 #define TAB_W 74
@@ -45,7 +44,6 @@ static XFontStruct *font;
 static XIM xim;
 static XIC xic;
 static Pixmap back;
-static Cursor cursor;
 static int win_w = 700, win_h = 450;
 static int cell_w = 8, cell_h = 16, font_ascent = 12;
 static int running = 1, need_redraw = 1, focused = 1;
@@ -571,9 +569,12 @@ static void resize_terminal(int w, int h)
     if (w < 160) w = 160;
     if (h < 80) h = 80;
     if (w == win_w && h == win_h && back) return;
+    Pixmap resized = XCreatePixmap(dpy, win, w, h, DefaultDepth(dpy, scr));
+    if (!resized) return;
     win_w = w; win_h = h;
-    if (back) XFreePixmap(dpy, back);
-    back = XCreatePixmap(dpy, win, win_w, win_h, DefaultDepth(dpy, scr));
+    Pixmap old = back;
+    back = resized;
+    if (old) XFreePixmap(dpy, old);
     for (int i = 0; i < ntabs; i++) {
         term_resize(&tabs[i]->em, content_cols(), content_rows());
         update_pty_size(tabs[i]);
@@ -897,6 +898,9 @@ static void create_window(void)
 {
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, scr), 80, 80, win_w, win_h, 0,
                               main_pixel, bg_pixel);
+    /* Every pixel is painted through the backing pixmap. Disabling the
+     * server's background erase avoids a blank frame during live resize. */
+    XSetWindowBackgroundPixmap(dpy, win, None);
     XSelectInput(dpy, win, ExposureMask | KeyPressMask | ButtonPressMask |
                  ButtonReleaseMask | PointerMotionMask | StructureNotifyMask |
                  FocusChangeMask);
@@ -911,8 +915,8 @@ static void create_window(void)
     memset(&hints, 0, sizeof(hints));
     hints.flags = PMinSize; hints.min_width = 160; hints.min_height = 80;
     XSetWMNormalHints(dpy, win, &hints);
-    cursor = XCreateFontCursor(dpy, XC_left_ptr);
-    XDefineCursor(dpy, win, cursor);
+    /* No per-window core-font cursor: inherit the root/session cursor so
+     * KDE, GTK and SCos windows all use the same configured pointer theme. */
     back = XCreatePixmap(dpy, win, win_w, win_h, DefaultDepth(dpy, scr));
     xim = XOpenIM(dpy, NULL, NULL, NULL);
     if (xim) {
@@ -992,7 +996,6 @@ int main(int argc, char **argv)
     if (xic) XDestroyIC(xic);
     if (xim) XCloseIM(xim);
     if (back) XFreePixmap(dpy, back);
-    if (cursor) XFreeCursor(dpy, cursor);
     if (font) XFreeFont(dpy, font);
     if (gc) XFreeGC(dpy, gc);
     XDestroyWindow(dpy, win);

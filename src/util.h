@@ -82,9 +82,9 @@ struct rgba_image {
     int w, h;
     unsigned char *pixels;      /* RGBA, row-major, w*h*4 bytes */
 };
-/* Load a PNG or XPM icon into memory. This is intentionally small and
- * dependency-light (zlib only); unsupported files return 0 so callers
- * can fall back to the SCos letter glyph. */
+/* Load a PNG or XPM icon with the small zlib-only decoders. SVG uses
+ * the desktop's gdk-pixbuf/librsvg loader through dlopen when installed;
+ * unsupported files return 0 so callers can use the SCos letter glyph. */
 int rgba_image_load(const char *path, struct rgba_image *out);
 void rgba_image_free(struct rgba_image *img);
 /* Scale down in place to fit maxw x maxh, preserving aspect. Images
@@ -92,7 +92,7 @@ void rgba_image_free(struct rgba_image *img);
 int rgba_image_scale_fit(struct rgba_image *img, int maxw, int maxh);
 /* Resolve a freedesktop icon name (or path) under explicit icon roots.
  * Roots may be icon-theme roots (.../icons) or pixmap directories
- * (.../pixmaps). Only PNG/XPM results are returned. */
+ * (.../pixmaps). PNG, XPM and SVG results are returned. */
 int icon_resolve_in(const char *icon, const char *const *roots, int nroots,
                     int preferred_size, char *out, int cap);
 /* Standard roots: user icons/pixmaps, /usr/local, /usr/share. */

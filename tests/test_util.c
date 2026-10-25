@@ -175,7 +175,7 @@ int main(void)
     CHECK(!strcmp(lat, ""));
 
 
-    /* freedesktop icon lookup + PNG/XMP decoding at normal icon sizes */
+    /* freedesktop icon lookup + PNG/XPM decoding and SVG discovery */
     {
         static const unsigned char png_bytes[] = {
             137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,2,0,0,0,2,8,6,0,0,0,114,182,13,36,0,0,0,21,73,68,65,84,120,156,99,248,207,240,31,136,64,16,8,24,24,254,55,0,0,96,50,10,119,93,233,27,79,0,0,0,0,73,69,78,68,174,66,96,130
@@ -207,6 +207,17 @@ int main(void)
         CHECK(rgba_image_load(xpm_path, &img));
         CHECK(img.w == 2 && img.pixels[0] == 255 && img.pixels[3] == 255 && img.pixels[7] == 0);
         rgba_image_free(&img);
+
+        /* KDE/Breeze themes commonly provide only scalable SVG icons. */
+        char scalable_dir[1024], scalable_app_dir[1024], svg_path[1024];
+        snprintf(scalable_dir, sizeof(scalable_dir), "%.1000s/scalable", theme_dir);
+        mkdir(scalable_dir, 0755);
+        snprintf(scalable_app_dir, sizeof(scalable_app_dir), "%.1000s/apps", scalable_dir);
+        mkdir(scalable_app_dir, 0755);
+        snprintf(svg_path, sizeof(svg_path), "%.1000s/vectorapp.svg", scalable_app_dir);
+        write_file(svg_path, "<svg xmlns='http://www.w3.org/2000/svg' width='24' height='24'><rect width='24' height='24'/></svg>\n");
+        CHECK(icon_resolve_in("vectorapp", roots, 1, 24, resolved, sizeof(resolved)));
+        CHECK(strstr(resolved, "scalable/apps/vectorapp.svg") != NULL);
     }
 
     if (failures) { printf("%d CHECK(s) failed\n", failures); return 1; }

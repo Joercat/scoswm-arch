@@ -37,6 +37,13 @@ app="$tmp/usr/share/applications/scos-terminal.desktop"
 grep -qx 'Name=SCos Terminal' "$app" || { echo "FAIL: terminal desktop entry has the wrong name"; exit 1; }
 grep -qx 'Exec=scos-terminal' "$app" || { echo "FAIL: terminal desktop entry does not launch scos-terminal"; exit 1; }
 grep -qx 'Terminal=false' "$app" || { echo "FAIL: graphical terminal must not be nested in another terminal"; exit 1; }
+grep -qx 'Icon=scos-terminal' "$app" || { echo "FAIL: terminal uses a generic icon"; exit 1; }
+grep -qx 'StartupWMClass=SCosTerminal' "$app" || { echo "FAIL: terminal KDE window class is not mapped"; exit 1; }
+for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256; do
+    icon="$tmp/usr/share/icons/hicolor/$size/apps/scos-terminal.png"
+    [ -s "$icon" ] || { echo "FAIL: missing SCos Terminal icon ($icon)"; exit 1; }
+done
 
 echo "SDDM session check: SCosWM will be listed and launchable ($entry)"
 echo "Standalone application check: SCos Terminal is available to other desktops ($app)"
+echo "Application identity check: dedicated terminal icons and KDE window class installed"

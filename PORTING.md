@@ -53,9 +53,13 @@ ISO10646 font when available for its Unicode cell grid.
   interactive-Bash PTY session — a theme or terminal regression fails CI.
 - `tests/run_integration.sh`: under Xvfb, boots scoswm and checks a
   real Xlib client is framed, focused and listed.
-- During development the WM was additionally exercised against a
-  pure-JavaScript X11 server (node `x11` package) driving real Xlib
-  binaries: adoption, drag, maximise/restore, Alt+Tab, minimise,
-  desktop-icon and launcher launching, config-file theming, and the
-  close button were all verified, with `docs/scoswm.png` captured from
-  such a run.
+- `tests/run_graphical.sh`: uses a pure-JavaScript X11 server to drive
+  the real Xlib WM and terminal without Xvfb. Set `SCOSWM_NODE_X11` to a
+  `sidorares/node-x11` checkout containing `lib/xserver`. The saved
+  regression covers buffered drawing, desktop/taskbar geometry, close
+  hover, taskbar stacking and single-press activation, resize-free
+  minimise/restore, terminal icon/cursor behavior and pointer-driven
+  terminal resize/move.
+- Earlier development runs also verified adoption, maximise/restore,
+  Alt+Tab, desktop-icon and launcher launching, and config-file theming;
+  `docs/scoswm.png` was captured from such a run.

@@ -52,7 +52,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.5.0"
+#define VERSION "0.5.1"
 #endif
 
 #define TITLE_H 26
@@ -66,7 +66,7 @@
 /* ------------------------------------------------------------------ state */
 static Display *dpy;
 static int scr_no;
-static Window root, wmcheck, bar_win, launch_win, menu_win, tool_win;
+static Window root, wmcheck, bar_win, launch_win, menu_win, tool_win, anim_win;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -119,6 +119,9 @@ struct client {
     Window win, frame;
     struct xicon *icon;
     int x, y, w, h;                /* frame position, client size */
+    int placed;                    /* last geometry actually sent to X */
+    int placed_x, placed_y, placed_fw, placed_fh;
+    int placed_cx, placed_cy, placed_cw, placed_ch;
     int sx, sy, sw, sh;            /* saved geometry for max/fullscreen */
     int minimized, maximized, fullscreen;
     int skip_taskbar;
@@ -335,19 +338,35 @@ static int frame_h(const struct client *c)
 
 static void client_place(struct client *c)
 {
-    XMoveResizeWindow(dpy, c->frame, c->x, c->y, frame_w(c), frame_h(c));
-    XMoveResizeWindow(dpy, c->win,
-                      c->fullscreen ? 0 : 1, c->fullscreen ? 0 : TOP_H, c->w, c->h);
-    /* synthetic ConfigureNotify so the client knows its real geometry */
-    XEvent ev; memset(&ev, 0, sizeof(ev));
-    ev.type = ConfigureNotify;
-    ev.xconfigure.display = dpy; ev.xconfigure.event = c->win; ev.xconfigure.window = c->win;
-    ev.xconfigure.x = c->x + (c->fullscreen ? 0 : 1);
-    ev.xconfigure.y = c->y + (c->fullscreen ? 0 : TOP_H);
-    ev.xconfigure.width = c->w; ev.xconfigure.height = c->h;
-    ev.xconfigure.border_width = 0; ev.xconfigure.above = None;
-    ev.xconfigure.override_redirect = False;
-    XSendEvent(dpy, c->win, False, StructureNotifyMask, &ev);
+    int fw = frame_w(c), fh = frame_h(c);
+    int cx = c->fullscreen ? 0 : 1, cy = c->fullscreen ? 0 : TOP_H;
+    if (!c->placed || c->placed_x != c->x || c->placed_y != c->y ||
+        c->placed_fw != fw || c->placed_fh != fh)
+        XMoveResizeWindow(dpy, c->frame, c->x, c->y, fw, fh);
+    /* Moving a frame must not issue a same-size resize to the application. */
+    if (!c->placed || c->placed_cx != cx || c->placed_cy != cy ||
+        c->placed_cw != c->w || c->placed_ch != c->h)
+        XMoveResizeWindow(dpy, c->win, cx, cy, c->w, c->h);
+    /* Synthetic ConfigureNotify supplies root-relative coordinates after a
+     * reparented move as required by ICCCM, but skip duplicate notifications. */
+    if (!c->placed || c->placed_x != c->x || c->placed_y != c->y ||
+        c->placed_cx != cx || c->placed_cy != cy ||
+        c->placed_cw != c->w || c->placed_ch != c->h) {
+        XEvent ev; memset(&ev, 0, sizeof(ev));
+        ev.type = ConfigureNotify;
+        ev.xconfigure.display = dpy; ev.xconfigure.event = c->win; ev.xconfigure.window = c->win;
+        ev.xconfigure.x = c->x + cx;
+        ev.xconfigure.y = c->y + cy;
+        ev.xconfigure.width = c->w; ev.xconfigure.height = c->h;
+        ev.xconfigure.border_width = 0; ev.xconfigure.above = None;
+        ev.xconfigure.override_redirect = False;
+        XSendEvent(dpy, c->win, False, StructureNotifyMask, &ev);
+    }
+    c->placed = 1;
+    c->placed_x = c->x; c->placed_y = c->y;
+    c->placed_fw = fw; c->placed_fh = fh;
+    c->placed_cx = cx; c->placed_cy = cy;
+    c->placed_cw = c->w; c->placed_ch = c->h;
 }
 
 static void read_title(struct client *c)
@@ -448,6 +467,20 @@ static void set_wm_state(struct client *c, int state)
                     PropModeReplace, (unsigned char *)st, n);
 }
 
+static void raise_client_frame(struct client *c)
+{
+    if (c->fullscreen) {
+        XRaiseWindow(dpy, c->frame);
+    } else {
+        /* Raise above applications but directly below the dock. A plain
+         * XRaiseWindow made the next focused app cover the taskbar. */
+        XWindowChanges wc;
+        wc.sibling = bar_win;
+        wc.stack_mode = Below;
+        XConfigureWindow(dpy, c->frame, CWSibling | CWStackMode, &wc);
+    }
+}
+
 static void activate(struct client *c, int raise)
 {
     if (!c) return;
@@ -463,7 +496,7 @@ static void activate(struct client *c, int raise)
             clients[nclients - 1] = c;
             break;
         }
-    if (raise) XRaiseWindow(dpy, c->frame);
+    if (raise) raise_client_frame(c);
     XSetInputFocus(dpy, c->win, RevertToPointerRoot, CurrentTime);
     if (has_proto(c, atoms[A_WM_TAKE_FOCUS])) send_proto(c, atoms[A_WM_TAKE_FOCUS]);
     struct client *old = active_client;
@@ -526,13 +559,13 @@ static void set_fullscreen(struct client *c, int on)
         if (!c->maximized) { c->sx = c->x; c->sy = c->y; c->sw = c->w; c->sh = c->h; }
         c->x = 0; c->y = 0; c->w = screen_w; c->h = screen_h;
         c->fullscreen = 1;
-        XRaiseWindow(dpy, c->frame);
     } else {
         c->x = c->sx; c->y = c->sy; c->w = c->sw; c->h = c->sh;
         c->fullscreen = 0;
     }
     set_wm_state(c, NormalState);
     frame_position_for_restore(c);
+    raise_client_frame(c);
 }
 
 static void close_client(struct client *c)
@@ -634,7 +667,8 @@ static void recalc_struts(void)
 
 static void manage(Window win)
 {
-    if (win == bar_win || win == launch_win || win == menu_win || win == tool_win || win == wmcheck) return;
+    if (win == bar_win || win == launch_win || win == menu_win || win == tool_win ||
+        win == anim_win || win == wmcheck) return;
     if (find_client(win)) return;
     XWindowAttributes at;
     if (!XGetWindowAttributes(dpy, win, &at)) return;
@@ -701,6 +735,7 @@ static void manage(Window win)
                              CopyFromParent, InputOutput, CopyFromParent,
                              CWBackPixel | CWEventMask | CWOverrideRedirect |
                              (wm_cursor ? CWCursor : 0), &fa);
+    XSetWindowBackgroundPixmap(dpy, c->frame, None);
     if (c->fullscreen) { c->x = 0; c->y = 0; c->w = screen_w; c->h = screen_h; }
     else if (c->maximized) {
         c->sx = c->x; c->sy = c->y; c->sw = c->w; c->sh = c->h;
@@ -741,6 +776,7 @@ static void manage(Window win)
     update_ewmh_client_list();
 
     if (!c->minimized) {
+        draw_frame(c);
         XMapWindow(dpy, win);
         XMapWindow(dpy, c->frame);
         activate(c, 1);
@@ -943,17 +979,25 @@ static int text_w(const char *s) { return XTextWidth(font, s, (int)strlen(s)); }
 
 static void clipped_text(Window w, int x, int y, const char *s, int max_w, unsigned long fg)
 {
+    if (max_w <= 0) return;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", s ? s : "");
     if (text_w(buf) > max_w) {
         int len = (int)strlen(buf);
+        int fitted = 0;
         while (len > 0) {
+            len--;
             buf[len] = 0;
             char tmp[260];
             snprintf(tmp, sizeof(tmp), "%s...", buf);
-            if (text_w(tmp) <= max_w) { snprintf(buf, sizeof(buf), "%s", tmp); break; }
-            len--;
+            size_t tmp_len = strlen(tmp);
+            if (text_w(tmp) <= max_w && tmp_len < sizeof(buf)) {
+                memcpy(buf, tmp, tmp_len + 1);
+                fitted = 1;
+                break;
+            }
         }
+        if (!fitted) buf[0] = 0;
     }
     text_out(w, x, y, buf, fg);
 }
@@ -967,6 +1011,34 @@ static void rect(Window w, int x, int y, int width, int height, unsigned long px
 {
     XSetForeground(dpy, gc, px);
     XDrawRectangle(dpy, w, gc, x, y, width - 1, height - 1);
+}
+
+static int centered_baseline(int y, int height)
+{
+    int fh = font->ascent + font->descent;
+    return y + (height - fh) / 2 + font->ascent;
+}
+
+/* Repaint WM surfaces into a backing store and present them in one copy.
+ * Directly clearing and rebuilding a visible taskbar/frame produced a
+ * blank flash on every clock tick, hover change and SysMon refresh. */
+static Pixmap surface_backing(Window win, Pixmap *pm, int *old_w, int *old_h,
+                              int width, int height)
+{
+    if (*pm && (*old_w != width || *old_h != height)) {
+        XFreePixmap(dpy, *pm);
+        *pm = None;
+    }
+    if (!*pm) {
+        *pm = XCreatePixmap(dpy, win, width, height, DefaultDepth(dpy, scr_no));
+        *old_w = width; *old_h = height;
+    }
+    return *pm;
+}
+
+static void surface_present(Window win, Pixmap pm, int width, int height)
+{
+    if (pm) XCopyArea(dpy, pm, win, gc, 0, 0, width, height, 0, 0);
 }
 
 static void draw_button_glyph(Window w, int x, int y, int kind, unsigned long fg)
@@ -983,29 +1055,55 @@ static void draw_button_glyph(Window w, int x, int y, int kind, unsigned long fg
     }
 }
 
+/* One grow-only scratch pixmap is shared by all frame repaints. Keeping
+ * a full-sized backing image per client would needlessly multiply memory
+ * use for large browser windows. */
+static Pixmap frame_pm = None;
+static int frame_pm_w, frame_pm_h;
+
+static Pixmap frame_backing(Window f, int width, int height)
+{
+    if (frame_pm && (width > frame_pm_w || height > frame_pm_h)) {
+        XFreePixmap(dpy, frame_pm);
+        frame_pm = None;
+    }
+    if (!frame_pm) {
+        if (width < frame_pm_w) width = frame_pm_w;
+        if (height < frame_pm_h) height = frame_pm_h;
+        frame_pm = XCreatePixmap(dpy, f, width, height, DefaultDepth(dpy, scr_no));
+        frame_pm_w = width; frame_pm_h = height;
+    }
+    return frame_pm;
+}
+
 static void draw_frame(struct client *c)
 {
-    if (!c || c->minimized) return;
+    if (!c || c->minimized || c->fullscreen) return;
     Window f = c->frame;
     int fw = frame_w(c), fh = frame_h(c);
-    if (c->fullscreen) return;
+    Pixmap pm = frame_backing(f, fw, fh);
+    Drawable d = pm ? pm : f;
     int focused = active_client == c;
-    fill(f, 0, 0, fw, fh, PX.win_bg);
-    rect(f, 0, 0, fw, fh, PX.main);
-    fill(f, 1, 1, fw - 2, TITLE_H - 1, focused ? PX.main : PX.title_off);
-    clipped_text(f, 8, 5 + font->ascent, c->title, fw - 96,
+    fill(d, 0, 0, fw, fh, PX.win_bg);
+    rect(d, 0, 0, fw, fh, PX.main);
+    fill(d, 1, 1, fw - 2, TITLE_H - 1, focused ? PX.main : PX.title_off);
+    clipped_text(d, 8, 5 + font->ascent, c->title, fw - 96,
                  focused ? PX.title_text : PX.text);
     unsigned long fg = focused ? PX.title_text : PX.text;
     for (int b = 0; b < 3; b++) {
         int bx = fw - 22 - (2 - b) * 22;
-        if (c == hover_frame_client && b == hover_title_btn)
-            fill(f, bx, 3, BTN_SZ, BTN_SZ, b == 2 ? PX.main : PX.bar_hi);
-        draw_button_glyph(f, bx, 4, b, fg);
+        int hover = c == hover_frame_client && b == hover_title_btn;
+        /* The old close hover used PX.main, exactly the focused titlebar
+         * colour, so it was literally invisible. Inverse hover keeps all
+         * three glyphs visible on both focused and unfocused frames. */
+        if (hover) fill(d, bx, 3, BTN_SZ, BTN_SZ, PX.title_text);
+        draw_button_glyph(d, bx, 4, b, hover ? PX.main : fg);
     }
     /* resize grip, like SCos's diagonal dots */
     XSetForeground(dpy, gc, PX.bar_hi);
     for (int i = 0; i < 4; i++)
-        XFillRectangle(dpy, f, gc, fw - 12 + i * 3, fh - 12 + i * 3, 2, 2);
+        XFillRectangle(dpy, d, gc, fw - 12 + i * 3, fh - 12 + i * 3, 2, 2);
+    surface_present(f, pm, fw, fh);
 }
 
 
@@ -1129,8 +1227,17 @@ static int client_desktop_app(struct client *c)
     return best;
 }
 
+static int bar_icon_size(int maximum)
+{
+    int size = bar_h - 16; /* 6 px margins + 1 px borders + breathing room */
+    if (size > maximum) size = maximum;
+    if (size < 8) size = 8;
+    return size;
+}
+
 static struct xicon *client_net_icon(struct client *c)
 {
+    int wanted = bar_icon_size(16);
     Atom type; int fmt; unsigned long n = 0, after = 0; unsigned char *data = NULL;
     if (XGetWindowProperty(dpy, c->win, atoms[A_NET_WM_ICON], 0, 1 << 18, False,
                            XA_CARDINAL, &type, &fmt, &n, &after, &data) != Success || !data)
@@ -1144,8 +1251,9 @@ static struct xicon *client_net_icon(struct client *c)
         unsigned long count = iw * ih;
         if (off + 2 + count > n) break;
         unsigned long area = count;
-        if (!have || (iw >= 16 && ih >= 16 && (best_w < 16 || area < best_area)) ||
-            (best_w < 16 && area > best_area)) {
+        if (!have || (iw >= (unsigned long)wanted && ih >= (unsigned long)wanted &&
+                      (best_w < (unsigned long)wanted || area < best_area)) ||
+            (best_w < (unsigned long)wanted && area > best_area)) {
             best_off = off; best_w = iw; best_h = ih; best_area = area; have = 1;
         }
         off += 2 + count;
@@ -1165,7 +1273,7 @@ static struct xicon *client_net_icon(struct client *c)
     XFree(data);
     struct xicon *xi = calloc(1, sizeof(*xi));
     if (!xi) { rgba_image_free(&img); return NULL; }
-    xi->size = 16; xi->owned = 1;
+    xi->size = wanted; xi->owned = 1;
     snprintf(xi->key, sizeof(xi->key), "client:0x%lx", c->win);
     if (!xicon_fill(xi, &img)) { free(xi); xi = NULL; }
     rgba_image_free(&img);
@@ -1177,7 +1285,7 @@ static struct xicon *client_load_icon(struct client *c)
     int app = client_desktop_app(c);
     if (app >= 0) {
         const char *spec = apps[app].icon[0] ? apps[app].icon : apps[app].id;
-        struct xicon *xi = xicon_get(spec, 16);
+        struct xicon *xi = xicon_get(spec, bar_icon_size(16));
         if (xicon_drawn(xi)) return xi;
     }
     return client_net_icon(c);
@@ -1206,6 +1314,10 @@ static void paint_desktop(Drawable d)
     XSetForeground(dpy, gc, PX.grid);
     for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
     for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
+    /* The grid alone only promised a line at the origin. Frame the actual
+     * usable desktop explicitly so the right and bottom edges cannot
+     * disappear merely because the screen size is not a multiple of 64. */
+    rect(d, 0, 0, screen_w, screen_h - bar_h, PX.main);
 
     /* desktop icons on the SCos 88x96 snap grid */
     for (int i = 0; i < npins; i++) {
@@ -1228,7 +1340,10 @@ static void paint_desktop(Drawable d)
             int gw = text_w(pins[i].glyph);
             text_out(d, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
         }
-        clipped_text(d, x + 4, y + 40 + font->ascent, pins[i].label, 72, PX.text);
+        int lw = text_w(pins[i].label);
+        if (lw > 72) lw = 72;
+        clipped_text(d, x + (80 - lw) / 2, y + 40 + font->ascent,
+                     pins[i].label, 72, PX.text);
     }
 }
 
@@ -1257,6 +1372,14 @@ static void draw_desktop(void)
     } else {
         paint_desktop(root);
     }
+}
+
+static void expose_desktop(void)
+{
+    if (desk_pm && desk_pm_w == screen_w && desk_pm_h == screen_h)
+        XCopyArea(dpy, desk_pm, root, gc, 0, 0, screen_w, screen_h, 0, 0);
+    else
+        draw_desktop();
 }
 
 /* ------------------------------------------------------------------- bar */
@@ -1308,23 +1431,32 @@ static void bar_layout(void)
     }
 }
 
+static Pixmap bar_pm = None;
+static int bar_pm_w, bar_pm_h;
+
 static void draw_bar(void)
 {
     if (!bar_win) return;
-    fill(bar_win, 0, 0, screen_w, bar_h, PX.taskbar_bg);
-    fill(bar_win, 0, 0, screen_w, 1, PX.main);
+    Pixmap pm = surface_backing(bar_win, &bar_pm, &bar_pm_w, &bar_pm_h,
+                                screen_w, bar_h);
+    Drawable d = pm ? pm : bar_win;
+    fill(d, 0, 0, screen_w, bar_h, PX.taskbar_bg);
+    fill(d, 0, 0, screen_w, 1, PX.main);
     int by = 6, bh = bar_h - 12;
     /* launcher button: the 2x2 SCos grid */
-    fill(bar_win, 8, by, 34, bh, launch_open || bar_hover == -2 ? PX.bar_hi : PX.taskbar_bg);
-    rect(bar_win, 8, by, 34, bh, PX.main);
+    fill(d, 8, by, 34, bh, launch_open || bar_hover == -2 ? PX.bar_hi : PX.taskbar_bg);
+    rect(d, 8, by, 34, bh, PX.main);
+    int cell_h = bh < 24 ? 4 : 6;
+    int grid_h = cell_h * 2 + 3;
+    int grid_x = 8 + (34 - 19) / 2, grid_y = by + (bh - grid_h) / 2;
     for (int q = 0; q < 4; q++)
-        fill(bar_win, 15 + (q % 2) * 11, by + 6 + (q / 2) * 9, 8, 6,
+        fill(d, grid_x + (q % 2) * 11, grid_y + (q / 2) * (cell_h + 3), 8, cell_h,
              launch_open ? PX.title_text : PX.main);
     /* Windows N picker */
     char wl[32]; snprintf(wl, sizeof(wl), "Windows %d", nclients);
-    fill(bar_win, 48, by, 110, bh, bar_hover == -3 ? PX.bar_hi : PX.taskbar_bg);
-    rect(bar_win, 48, by, 110, bh, PX.main);
-    clipped_text(bar_win, 56, by + 6 + font->ascent, wl, 94, PX.text);
+    fill(d, 48, by, 110, bh, bar_hover == -3 ? PX.bar_hi : PX.taskbar_bg);
+    rect(d, 48, by, 110, bh, PX.main);
+    clipped_text(d, 56, centered_baseline(by, bh), wl, 94, PX.text);
 
     bar_layout();
     for (int i = 0; i < bar_n; i++) {
@@ -1333,52 +1465,57 @@ static void draw_bar(void)
             struct pin *p = &pins[it->idx];
             int lit = bar_press == i || bar_hover == i ||
                       (bar_flash_pin == it->idx && time(NULL) <= bar_flash_until);
-            fill(bar_win, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
-            rect(bar_win, it->x, by, 34, bh, PX.main);
-            struct xicon *xi = xicon_get(p->icon, bh < 20 ? bh : 20);
+            fill(d, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
+            rect(d, it->x, by, 34, bh, PX.main);
+            struct xicon *xi = xicon_get(p->icon, bar_icon_size(20));
             if (xicon_drawn(xi))
-                draw_xicon(bar_win, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
+                draw_xicon(d, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
             else {
                 int gw = text_w(p->glyph);
-                text_out(bar_win, it->x + (34 - gw) / 2, by + 8 + font->ascent, p->glyph, PX.text);
+                text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph, PX.text);
             }
         } else {
             struct client *c = clients[it->idx];
             int foc = active_client == c;
-            fill(bar_win, it->x, by, it->w, bh,
+            fill(d, it->x, by, it->w, bh,
                  foc || bar_press == i || bar_hover == i ? PX.bar_hi : PX.taskbar_bg);
-            rect(bar_win, it->x, by, it->w, bh, PX.main);
+            rect(d, it->x, by, it->w, bh, PX.main);
             int tx = it->x + 6;
             if (xicon_drawn(c->icon)) {
-                draw_xicon(bar_win, c->icon, tx, by + (bh - c->icon->h) / 2);
+                draw_xicon(d, c->icon, tx, by + (bh - c->icon->h) / 2);
                 tx += c->icon->w + 4;
             }
             char title[288];
             if (c->minimized) snprintf(title, sizeof(title), "[-] %s", c->title);
             else snprintf(title, sizeof(title), "%s", c->title);
-            clipped_text(bar_win, tx, by + 6 + font->ascent, title,
+            clipped_text(d, tx, centered_baseline(by, bh), title,
                          it->x + it->w - tx - 4, c->minimized ? PX.title_off : PX.text);
         }
     }
     /* power button */
     int pw = 34, px = bar_power_x();
-    fill(bar_win, px, by, pw, bh, bar_hover == -4 ? PX.bar_hi : PX.taskbar_bg);
-    rect(bar_win, px, by, pw, bh, PX.main);
+    fill(d, px, by, pw, bh, bar_hover == -4 ? PX.bar_hi : PX.taskbar_bg);
+    rect(d, px, by, pw, bh, PX.main);
     XSetForeground(dpy, gc, PX.main);
-    XDrawArc(dpy, bar_win, gc, px + pw / 2 - 7, by + bh / 2 - 5, 14, 14, 45 * 64, 270 * 64);
-    XDrawLine(dpy, bar_win, gc, px + pw / 2, by + bh / 2 - 8, px + pw / 2, by + bh / 2);
+    int radius = (bh - 4) / 2;
+    if (radius > 7) radius = 7;
+    if (radius < 3) radius = 3;
+    int cx = px + pw / 2, cy = by + bh / 2 + 1;
+    XDrawArc(dpy, d, gc, cx - radius, cy - radius, radius * 2, radius * 2,
+             45 * 64, 270 * 64);
+    XDrawLine(dpy, d, gc, cx, cy - radius - 1, cx, cy);
     /* clock */
     time_t now = time(NULL);
     struct tm tmv; localtime_r(&now, &tmv);
     char clock[16];
     snprintf(clock, sizeof(clock), "%02d:%02d:%02d", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
-    text_out(bar_win, screen_w - text_w(clock) - 10, by + 6 + font->ascent, clock, PX.main);
+    text_out(d, screen_w - text_w(clock) - 10, centered_baseline(0, bar_h), clock, PX.main);
+    surface_present(bar_win, pm, screen_w, bar_h);
 }
 
-/* Short, synchronous minimise/restore transitions. Six quick steps are
- * enough to stop windows feeling like they teleport, without adding a
- * compositor, a timer loop, or any idle cost: nothing runs at all while
- * no window is animating. */
+/* Short, synchronous minimise/restore transitions. Only a lightweight
+ * placeholder changes size: resizing the real client six times made web
+ * engines redraw a tiny page and then spend much longer scaling it back. */
 static int taskbar_rect_for_client(struct client *c, int *x, int *y, int *w, int *h)
 {
     bar_layout();
@@ -1392,6 +1529,21 @@ static int taskbar_rect_for_client(struct client *c, int *x, int *y, int *w, int
     return 0;
 }
 
+static Pixmap anim_pm = None;
+static int anim_pm_w, anim_pm_h;
+
+static void draw_animation(struct client *c, int w, int h)
+{
+    Pixmap pm = surface_backing(anim_win, &anim_pm, &anim_pm_w, &anim_pm_h, w, h);
+    Drawable d = pm ? pm : anim_win;
+    fill(d, 0, 0, w, h, PX.win_bg);
+    rect(d, 0, 0, w, h, PX.main);
+    if (w > 2 && h > 2) fill(d, 1, 1, w - 2, h - 2 < TITLE_H - 1 ? h - 2 : TITLE_H - 1, PX.main);
+    if (w >= 48 && h >= TITLE_H)
+        clipped_text(d, 6, 5 + font->ascent, c->title, w - 12, PX.title_text);
+    surface_present(anim_win, pm, w, h);
+}
+
 static void animate_frame_between(struct client *c,
                                   int sx, int sy, int sw, int sh,
                                   int tx, int ty, int tw, int th)
@@ -1403,21 +1555,33 @@ static void animate_frame_between(struct client *c,
         int h = sh + (th - sh) * step / 6;
         if (w < 4) w = 4;
         if (h < 4) h = 4;
-        XMoveResizeWindow(dpy, c->frame, x, y, w, h);
-        XMoveResizeWindow(dpy, c->win, c->fullscreen ? 0 : 1,
-                          c->fullscreen ? 0 : TOP_H,
-                          w > 2 ? w - 2 : 1,
-                          h > TOP_H + 1 ? h - TOP_H - 1 : 1);
+        XMoveResizeWindow(dpy, anim_win, x, y, w, h);
+        draw_animation(c, w, h);
         XFlush(dpy);
         usleep(12000);
     }
+}
+
+static void animation_show(struct client *c, int x, int y, int w, int h)
+{
+    XMoveResizeWindow(dpy, anim_win, x, y, w, h);
+    draw_animation(c, w, h);
+    XMapWindow(dpy, anim_win);
+    XWindowChanges wc;
+    wc.sibling = bar_win;
+    wc.stack_mode = Below;
+    XConfigureWindow(dpy, anim_win, CWSibling | CWStackMode, &wc);
 }
 
 static void animate_minimize(struct client *c)
 {
     int tx, ty, tw, th;
     if (!c || c->fullscreen || !taskbar_rect_for_client(c, &tx, &ty, &tw, &th)) return;
-    animate_frame_between(c, c->x, c->y, frame_w(c), frame_h(c), tx, ty, tw, th);
+    int sx = c->x, sy = c->y, sw = frame_w(c), sh = frame_h(c);
+    XUnmapWindow(dpy, c->frame);
+    animation_show(c, sx, sy, sw, sh);
+    animate_frame_between(c, sx, sy, sw, sh, tx, ty, tw, th);
+    XUnmapWindow(dpy, anim_win);
 }
 
 static void animate_restore(struct client *c)
@@ -1429,28 +1593,33 @@ static void animate_restore(struct client *c)
         return;
     }
     int fx = c->x, fy = c->y, fw = frame_w(c), fh = frame_h(c);
-    XMoveResizeWindow(dpy, c->frame, tx, ty, tw, th);
-    XMoveResizeWindow(dpy, c->win, 1, TOP_H, tw > 2 ? tw - 2 : 1,
-                      th > TOP_H + 1 ? th - TOP_H - 1 : 1);
+    animation_show(c, tx, ty, tw, th);
+    animate_frame_between(c, tx, ty, tw, th, fx, fy, fw, fh);
+    /* The real frame/client kept their geometry; only map them again. */
+    draw_frame(c);
     XMapWindow(dpy, c->win);
     XMapWindow(dpy, c->frame);
-    animate_frame_between(c, tx, ty, tw, th, fx, fy, fw, fh);
-    client_place(c);
+    XUnmapWindow(dpy, anim_win);
 }
 
 /* ------------------------------------------------------ launcher window */
+static Pixmap launch_pm = None;
+static int launch_pm_w, launch_pm_h;
+
 static void draw_launcher(void)
 {
     if (!launch_open) return;
     int h = 308, y = screen_h - bar_h - h - 4;
     XMoveResizeWindow(dpy, launch_win, 8, y, 300, h);
-    fill(launch_win, 0, 0, 300, h, PX.win_bg);
-    rect(launch_win, 0, 0, 300, h, PX.main);
-    text_out(launch_win, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_all && !launch_q[0] ? "All installed apps - Esc goes back" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
-    rect(launch_win, 10, 26, 280, 20, PX.main);
-    text_out(launch_win, 14, 30 + font->ascent, launch_q, PX.text);
+    Pixmap pm = surface_backing(launch_win, &launch_pm, &launch_pm_w, &launch_pm_h, 300, h);
+    Drawable d = pm ? pm : launch_win;
+    fill(d, 0, 0, 300, h, PX.win_bg);
+    rect(d, 0, 0, 300, h, PX.main);
+    text_out(d, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_all && !launch_q[0] ? "All installed apps - Esc goes back" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
+    rect(d, 10, 26, 280, 20, PX.main);
+    text_out(d, 14, 30 + font->ascent, launch_q, PX.text);
     int caret_x = 14 + text_w(launch_q);
-    if ((time(NULL) % 2) == 0) fill(launch_win, caret_x, 30, 2, 12, PX.main);
+    if ((time(NULL) % 2) == 0) fill(d, caret_x, 30, 2, 12, PX.main);
     int n = launch_rebuild();
     int rows = (h - 64) / 24; if (rows > 10) rows = 10;
     if (launch_sel < launch_offset) launch_offset = launch_sel;
@@ -1458,17 +1627,18 @@ static void draw_launcher(void)
     int yy = 56;
     for (int r = 0; r < rows && launch_offset + r < n; r++) {
         struct launch_item *it = &launch_items[launch_offset + r];
-        if (launch_offset + r == launch_sel) fill(launch_win, 6, yy - 3, 288, 22, PX.bar_hi);
+        if (launch_offset + r == launch_sel) fill(d, 6, yy - 3, 288, 22, PX.bar_hi);
         struct xicon *xi = xicon_get(it->icon, 20);
-        if (xicon_drawn(xi)) draw_xicon(launch_win, xi, 10, yy - 1);
-        else text_out(launch_win, 12, yy + 4 + font->ascent, it->glyph, PX.main);
-        clipped_text(launch_win, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
+        if (xicon_drawn(xi)) draw_xicon(d, xi, 10, yy - 1);
+        else text_out(d, 12, yy + 4 + font->ascent, it->glyph, PX.main);
+        clipped_text(d, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
                      launch_offset + r == launch_sel ? PX.title_text : PX.text);
         if (it->app_idx >= 0 && app_is_pinned(it->app_idx))
-            text_out(launch_win, 262, yy + 4 + font->ascent, "PIN", PX.main);
+            text_out(d, 262, yy + 4 + font->ascent, "PIN", PX.main);
         yy += 24;
     }
-    if (!n) text_out(launch_win, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
+    if (!n) text_out(d, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
+    surface_present(launch_win, pm, 300, h);
     XRaiseWindow(dpy, launch_win);
 }
 
@@ -1530,17 +1700,23 @@ static void menu_open(int kind, int x, int y, Window target)
     draw_menu();
 }
 
+static Pixmap menu_pm = None;
+static int menu_pm_w, menu_pm_h;
+
 static void draw_menu(void)
 {
     if (menu_kind == MENU_NONE) return;
     int w = menu_w, h = menu_n * 24 + 6;
-    fill(menu_win, 0, 0, w, h, PX.win_bg);
-    rect(menu_win, 0, 0, w, h, PX.main);
+    Pixmap pm = surface_backing(menu_win, &menu_pm, &menu_pm_w, &menu_pm_h, w, h);
+    Drawable d = pm ? pm : menu_win;
+    fill(d, 0, 0, w, h, PX.win_bg);
+    rect(d, 0, 0, w, h, PX.main);
     for (int i = 0; i < menu_n; i++) {
-        if (i == menu_hover) fill(menu_win, 2, 3 + i * 24, w - 4, 24, PX.bar_hi);
-        clipped_text(menu_win, 10, 3 + i * 24 + 4 + font->ascent, menu_labels[i], w - 20,
+        if (i == menu_hover) fill(d, 2, 3 + i * 24, w - 4, 24, PX.bar_hi);
+        clipped_text(d, 10, 3 + i * 24 + 4 + font->ascent, menu_labels[i], w - 20,
                      i == menu_hover ? PX.title_text : PX.text);
     }
+    surface_present(menu_win, pm, w, h);
     XRaiseWindow(dpy, menu_win);
 }
 
@@ -1740,8 +1916,10 @@ static void on_button(XButtonEvent *e)
             cycle(e->button == Button5 ? 1 : -1);
             return;
         }
-        if (e->x >= 8 && e->x < 42 && e->y >= 6) { launcher_toggle(!launch_open); return; }
-        if (e->x >= 48 && e->x < 158 && e->y >= 6) {
+        if (e->x >= 8 && e->x < 42 && e->y >= 6 && e->y < bar_h - 6) {
+            launcher_toggle(!launch_open); return;
+        }
+        if (e->x >= 48 && e->x < 158 && e->y >= 6 && e->y < bar_h - 6) {
             /* Windows picker as a SCos-style menu of open windows */
             if (!nclients) { wm_notify_no_windows(); return; }
             menu_kind = MENU_PICKER;
@@ -1760,13 +1938,14 @@ static void on_button(XButtonEvent *e)
             return;
         }
         int pw_x = bar_power_x();
-        if (e->x >= pw_x && e->x < pw_x + 34 && e->y >= 6) {
+        if (e->x >= pw_x && e->x < pw_x + 34 && e->y >= 6 && e->y < bar_h - 6) {
             menu_open(MENU_POWER, pw_x - 140, screen_h - bar_h - (6 * 24 + 8), None);
             return;
         }
         for (int i = 0; i < bar_n; i++) {
             struct bar_item *it = &bar_items[i];
-            if (e->x >= it->x && e->x < it->x + it->w && e->y >= 6) {
+            if (e->x >= it->x && e->x < it->x + it->w &&
+                e->y >= 6 && e->y < bar_h - 6) {
                 if (it->kind == 1) {
                     if (e->button == Button1) {
                         /* Instant visible feedback on mousedown, plus a
@@ -1779,12 +1958,15 @@ static void on_button(XButtonEvent *e)
                         bar_flash_until = time(NULL) + 2;
                         draw_bar();
                         launch_pin(it->idx);
+                        bar_press = -1; /* the two-second launch flash is not a held button */
+                        draw_bar();
                     }
                 } else {
                     struct client *c = clients[it->idx];
                     if (e->button == Button1) {
                         bar_press = i;
                         draw_bar();
+                        bar_press = -1;
                         if (active_client == c && !c->minimized) minimize(c);
                         else activate(c, 1);
                     } else if (e->button == Button3) {
@@ -2320,6 +2502,13 @@ static void create_ui_windows(void)
                              CopyFromParent, InputOutput, CopyFromParent,
                              CWBackPixel | CWEventMask | CWOverrideRedirect |
                              (wm_cursor ? CWCursor : 0), &at);
+    at.event_mask = 0;
+    anim_win = XCreateWindow(dpy, root, 0, 0, 4, 4, 0,
+                             CopyFromParent, InputOutput, CopyFromParent,
+                             CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+    Window buffered[] = { bar_win, launch_win, menu_win, tool_win, anim_win };
+    for (unsigned int i = 0; i < sizeof(buffered) / sizeof(buffered[0]); i++)
+        XSetWindowBackgroundPixmap(dpy, buffered[i], None);
 }
 
 
@@ -2402,6 +2591,10 @@ static void apply_bar_height_live(int v)
     if (v > 64) v = 64;
     cfg.bar_height = v;
     bar_h = v;
+    for (int i = 0; i < nclients; i++) {
+        xicon_destroy_owned(clients[i]->icon);
+        clients[i]->icon = client_load_icon(clients[i]);
+    }
     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
     int x, y, w, h; work_area(&x, &y, &w, &h);
     for (int i = 0; i < nclients; i++) {
@@ -2574,80 +2767,86 @@ static void tool_open(int kind)
     draw_tool();
 }
 
-static void draw_meter(const char *label, double frac, const char *value, int y)
+static void draw_meter(Drawable d, const char *label, double frac, const char *value, int y)
 {
     if (frac < 0) frac = 0;
     if (frac > 1) frac = 1;
-    text_out(tool_win, 16, y + font->ascent, label, PX.text);
-    rect(tool_win, 112, y, 300, 16, PX.main);
-    fill(tool_win, 113, y + 1, (int)(298 * frac), 14, PX.main);
-    text_out(tool_win, 424, y + font->ascent, value, PX.text);
+    text_out(d, 16, y + font->ascent, label, PX.text);
+    rect(d, 112, y, 300, 16, PX.main);
+    fill(d, 113, y + 1, (int)(298 * frac), 14, PX.main);
+    text_out(d, 424, y + font->ascent, value, PX.text);
 }
+
+static Pixmap tool_pm = None;
+static int tool_pm_w, tool_pm_h;
 
 static void draw_tool(void)
 {
     if (tool_kind == TOOL_NONE) return;
-    fill(tool_win, 0, 0, TOOL_W, TOOL_H, PX.win_bg);
-    rect(tool_win, 0, 0, TOOL_W, TOOL_H, PX.main);
-    fill(tool_win, 1, 1, TOOL_W - 2, 25, PX.main);
-    text_out(tool_win, 10, 6 + font->ascent, tool_kind == TOOL_SETTINGS ? "Settings" : "SysMon", PX.title_text);
-    draw_button_glyph(tool_win, TOOL_W - 27, 4, 2, PX.title_text);
+    Pixmap pm = surface_backing(tool_win, &tool_pm, &tool_pm_w, &tool_pm_h, TOOL_W, TOOL_H);
+    Drawable d = pm ? pm : tool_win;
+    fill(d, 0, 0, TOOL_W, TOOL_H, PX.win_bg);
+    rect(d, 0, 0, TOOL_W, TOOL_H, PX.main);
+    fill(d, 1, 1, TOOL_W - 2, 25, PX.main);
+    text_out(d, 10, 6 + font->ascent, tool_kind == TOOL_SETTINGS ? "Settings" : "SysMon", PX.title_text);
+    draw_button_glyph(d, TOOL_W - 27, 4, 2, PX.title_text);
 
     if (tool_kind == TOOL_SYSMON) {
         char value[64];
         snprintf(value, sizeof(value), "%.0f%%", sysmon_state.cpu_percent);
-        draw_meter("CPU", sysmon_state.cpu_percent / 100.0, value, 48);
+        draw_meter(d, "CPU", sysmon_state.cpu_percent / 100.0, value, 48);
         unsigned long used = sysmon_state.mem.total_kb > sysmon_state.mem.available_kb ?
             sysmon_state.mem.total_kb - sysmon_state.mem.available_kb : 0;
         double mem_frac = sysmon_state.mem.total_kb ? (double)used / sysmon_state.mem.total_kb : 0;
         snprintf(value, sizeof(value), "%.0f%%", mem_frac * 100.0);
-        draw_meter("Memory", mem_frac, value, 82);
+        draw_meter(d, "Memory", mem_frac, value, 82);
         unsigned long swap_used = sysmon_state.mem.swap_total_kb > sysmon_state.mem.swap_free_kb ?
             sysmon_state.mem.swap_total_kb - sysmon_state.mem.swap_free_kb : 0;
         double swap_frac = sysmon_state.mem.swap_total_kb ? (double)swap_used / sysmon_state.mem.swap_total_kb : 0;
         snprintf(value, sizeof(value), "%.0f%%", swap_frac * 100.0);
-        draw_meter("Swap", swap_frac, value, 116);
+        draw_meter(d, "Swap", swap_frac, value, 116);
 
         char line[512];
         int y = 164;
         snprintf(line, sizeof(line), "Host: %s", sysmon_state.hostname);
-        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(d, 16, y, line, 508, PX.text); y += 26;
         snprintf(line, sizeof(line), "Kernel: %s", sysmon_state.kernel);
-        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(d, 16, y, line, 508, PX.text); y += 26;
         unsigned long secs = (unsigned long)sysmon_state.uptime_seconds;
         snprintf(line, sizeof(line), "Uptime: %lud %02luh %02lum    Load: %.2f    Processes: %d",
                  secs / 86400, (secs / 3600) % 24, (secs / 60) % 60,
                  sysmon_state.load1, sysmon_state.processes);
-        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(d, 16, y, line, 508, PX.text); y += 26;
         snprintf(line, sizeof(line), "RAM: %.1f / %.1f GiB    Swap: %.1f / %.1f GiB",
                  used / 1048576.0, sysmon_state.mem.total_kb / 1048576.0,
                  swap_used / 1048576.0, sysmon_state.mem.swap_total_kb / 1048576.0);
-        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(d, 16, y, line, 508, PX.text); y += 26;
         snprintf(line, sizeof(line), "GPU: %s", sysmon_state.gpu);
-        clipped_text(tool_win, 16, y, line, 508, PX.text); y += 26;
-        clipped_text(tool_win, 16, y, sysmon_state.temperature, 508, PX.text);
-        text_out(tool_win, 16, TOOL_H - 18, "Live from /proc and /sys - refreshes only while open - Esc closes", PX.title_off);
+        clipped_text(d, 16, y, line, 508, PX.text); y += 26;
+        clipped_text(d, 16, y, sysmon_state.temperature, 508, PX.text);
+        text_out(d, 16, TOOL_H - 18, "Live from /proc and /sys - refreshes only while open - Esc closes", PX.title_off);
+        surface_present(tool_win, pm, TOOL_W, TOOL_H);
         return;
     }
 
     /* Settings */
-    text_out(tool_win, 16, 48 + font->ascent, "Theme", PX.main);
+    text_out(d, 16, 48 + font->ascent, "Theme", PX.main);
     for (int i = 0; i < scos_theme_count; i++) {
         int x = 16 + i * 128, y = 62;
         int selected = !strcmp(cfg.theme, scos_themes[i].id);
-        fill(tool_win, x, y, 120, 40, selected ? PX.bar_hi : PX.win_bg);
-        rect(tool_win, x, y, 120, 40, PX.main);
+        fill(d, x, y, 120, 40, selected ? PX.bar_hi : PX.win_bg);
+        rect(d, x, y, 120, 40, PX.main);
         int tw = text_w(scos_themes[i].name);
-        text_out(tool_win, x + (120 - tw) / 2, y + 14 + font->ascent, scos_themes[i].name,
+        text_out(d, x + (120 - tw) / 2, y + 14 + font->ascent, scos_themes[i].name,
                  selected ? PX.title_text : PX.text);
     }
 
     static const char *labels[4] = { "", "Terminal", "Files", "Pins" };
     for (int field = 1; field <= 3; field++) {
         int y = 124 + (field - 1) * 44;
-        text_out(tool_win, 16, y + 9 + font->ascent, labels[field], PX.main);
-        fill(tool_win, 100, y, 424, 30, PX.win_bg);
-        rect(tool_win, 100, y, 424, 30, settings_field == field ? PX.title_text : PX.main);
+        text_out(d, 16, y + 9 + font->ascent, labels[field], PX.main);
+        fill(d, 100, y, 424, 30, PX.win_bg);
+        rect(d, 100, y, 424, 30, settings_field == field ? PX.title_text : PX.main);
         char shown[1056];
         size_t cap = 0; char *target = settings_target(field, &cap); (void)cap;
         if (settings_field == field) snprintf(shown, sizeof(shown), "%s", settings_edit);
@@ -2657,24 +2856,25 @@ static void draw_tool(void)
             const char *e = detect_files_exec();
             snprintf(shown, sizeof(shown), "(auto: %s)", e ? e : "xdg-open");
         } else snprintf(shown, sizeof(shown), "%s", cfg.pins);
-        clipped_text(tool_win, 108, y + 9 + font->ascent, shown, 390, PX.text);
+        clipped_text(d, 108, y + 9 + font->ascent, shown, 390, PX.text);
         if (settings_field == field && (time(NULL) % 2) == 0) {
             int cx = 108 + text_w(settings_edit);
-            if (cx < 518) fill(tool_win, cx, y + 8, 2, 14, PX.main);
+            if (cx < 518) fill(d, cx, y + 8, 2, 14, PX.main);
         }
     }
 
-    text_out(tool_win, 16, 268 + font->ascent, "Taskbar", PX.main);
-    rect(tool_win, 100, 256, 34, 30, PX.main);
-    text_out(tool_win, 112, 265 + font->ascent, "-", PX.text);
+    text_out(d, 16, 268 + font->ascent, "Taskbar", PX.main);
+    rect(d, 100, 256, 34, 30, PX.main);
+    text_out(d, 112, 265 + font->ascent, "-", PX.text);
     char bh[32]; snprintf(bh, sizeof(bh), "%d px", cfg.bar_height);
-    text_out(tool_win, 146, 265 + font->ascent, bh, PX.text);
-    rect(tool_win, 204, 256, 34, 30, PX.main);
-    text_out(tool_win, 216, 265 + font->ascent, "+", PX.text);
+    text_out(d, 146, 265 + font->ascent, bh, PX.text);
+    rect(d, 204, 256, 34, 30, PX.main);
+    text_out(d, 216, 265 + font->ascent, "+", PX.text);
 
-    clipped_text(tool_win, 16, 316, settings_status[0] ? settings_status :
+    clipped_text(d, 16, 316, settings_status[0] ? settings_status :
                  "Theme and taskbar apply immediately. Click a field to edit it.", 508, PX.text);
-    text_out(tool_win, 16, TOOL_H - 18, "Single workspace by design - no pager or workspace daemon", PX.title_off);
+    text_out(d, 16, TOOL_H - 18, "Single workspace by design - no pager or workspace daemon", PX.title_off);
+    surface_present(tool_win, pm, TOOL_W, TOOL_H);
 }
 
 static int tool_button(XButtonEvent *e)
@@ -3022,7 +3222,7 @@ int main(int argc, char **argv)
                 break;
             case Expose:
                 if (ev.xexpose.count == 0) {
-                    if (ev.xexpose.window == root) draw_desktop();
+                    if (ev.xexpose.window == root) expose_desktop();
                     else if (ev.xexpose.window == bar_win) draw_bar();
                     else if (ev.xexpose.window == launch_win) draw_launcher();
                     else if (ev.xexpose.window == menu_win) draw_menu();

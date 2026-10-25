@@ -1,3 +1,24 @@
+scoswm (0.5.1) unstable; urgency=medium
+
+  * Double-buffer taskbar, frame, launcher, menu, SysMon and Settings
+    painting; reuse the desktop backing pixmap on expose and avoid
+    erase-before-redraw flashes during terminal and frame resizing.
+  * Keep ordinary application frames below the taskbar, make taskbar
+    activation respond on a single press, scale and centre all bar
+    controls, and add a contrasting close-button hover state.
+  * Animate minimise/restore with a separate placeholder without resizing
+    the real application; avoid duplicate client geometry requests when
+    moving windows. Terminal resize keeps a complete backing image.
+  * Inherit the session cursor in SCos Terminal, centre desktop labels,
+    and draw explicit right/bottom desktop border lines.
+  * Install dedicated SCos Terminal hicolor icons and a KDE window-class
+    mapping; support SVG application icons through the optional desktop
+    gdk-pixbuf/librsvg loader in addition to built-in PNG/XPM decoding.
+  * Add repeatable headless graphical regressions for painting, layout,
+    stacking, cursor inheritance, icons and resize-free animations.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 23:45:00 -0400
+
 scoswm (0.5.0) unstable; urgency=medium
 
   * Add scos-terminal, a standalone SCos-styled Xlib terminal with tabs,

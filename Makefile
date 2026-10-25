@@ -4,9 +4,9 @@
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.0"'
+CPPFLAGS += -DVERSION='"0.5.1"'
 LDLIBS    = -lX11 -lz -ldl
-TERM_LDLIBS = -lX11 -lz -lutil
+TERM_LDLIBS = -lX11 -lz -lutil -ldl
 PREFIX   ?= /usr
 DESTDIR  ?=
 
@@ -22,17 +22,19 @@ scos-terminal: $(TERM_SRC) src/term_emulation.h src/util.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -o $@ $(TERM_SRC) $(LDFLAGS) $(TERM_LDLIBS)
 
 # Pure tests and the real-Bash PTY test run without an X server.
-# If Xvfb is installed, the WM integration test also boots the WM and
-# pastes a real X client onto the screen to be screenshotted.
+# If Xvfb is installed, the WM integration test also boots the WM and a
+# real X client. tests/run_graphical.sh additionally uses node-x11 when
+# SCOSWM_NODE_X11 (or an installed x11 module with lib/xserver) is present.
 check: scoswm scos-terminal test_util test_terminal test_pty
 	./test_util
 	./test_terminal
 	./test_pty
 	./tests/check_sddm.sh
 	./tests/run_integration.sh ./scoswm
+	./tests/run_graphical.sh
 
 test_util: tests/test_util.c src/util.c src/util.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_util.c src/util.c $(LDFLAGS) -lz
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_util.c src/util.c $(LDFLAGS) -lz -ldl
 
 test_terminal: tests/test_terminal.c src/term_emulation.c src/term_emulation.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_terminal.c src/term_emulation.c $(LDFLAGS)
@@ -46,6 +48,10 @@ install: scoswm scos-terminal
 	install -Dm755 packaging/scoswm-session $(DESTDIR)$(PREFIX)/bin/scoswm-session
 	install -Dm644 packaging/scoswm.desktop $(DESTDIR)$(PREFIX)/share/xsessions/scoswm.desktop
 	install -Dm644 packaging/scos-terminal.desktop $(DESTDIR)$(PREFIX)/share/applications/scos-terminal.desktop
+	for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256; do \
+		install -Dm644 packaging/icons/hicolor/$$size/apps/scos-terminal.png \
+			$(DESTDIR)$(PREFIX)/share/icons/hicolor/$$size/apps/scos-terminal.png; \
+	done
 	install -Dm644 packaging/scoswm.conf.example $(DESTDIR)$(PREFIX)/share/doc/scoswm/scoswm.conf.example
 	install -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/scoswm/README.md
 
