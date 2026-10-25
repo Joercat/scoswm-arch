@@ -52,7 +52,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.5.1"
+#define VERSION "0.5.2"
 #endif
 
 #define TITLE_H 26
@@ -124,7 +124,6 @@ struct client {
     int placed_cx, placed_cy, placed_cw, placed_ch;
     int sx, sy, sw, sh;            /* saved geometry for max/fullscreen */
     int minimized, maximized, fullscreen;
-    int skip_taskbar;
     Window transient_for;
     XSizeHints hints; int has_hints;
     char title[256];
@@ -444,6 +443,7 @@ static void wm_notify_no_windows(void);
 static void menu_close(void);
 enum { TOOL_NONE, TOOL_SETTINGS, TOOL_SYSMON };
 static int tool_kind;
+static int tool_release_pending;
 static void tool_open(int kind);
 static void tool_close(void);
 static void draw_tool(void);
@@ -697,8 +697,6 @@ static void manage(Window win)
     if (c->y + frame_h(c) > wy + wh) c->y = wy + wh - frame_h(c);
     if (c->x < wx) c->x = wx;
     if (c->y < wy) c->y = wy;
-    c->skip_taskbar = (wt == (Atom)XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_UTILITY", False) ||
-                       wt == (Atom)XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_SPLASH", False));
     Window tw = None;
     if (XGetTransientForHint(dpy, win, &tw) && tw && tw != root) {
         c->transient_for = tw;
@@ -964,6 +962,8 @@ static int menu_kind, menu_n;
 static int menu_hover = -1;
 static char menu_labels[8][64];
 static Window menu_target;           /* title menu: the client acted on */
+static Window menu_item_targets[8];  /* stable window IDs for picker rows */
+static int menu_bar_release;         /* ignore release from the opening click */
 static int menu_x, menu_y, menu_w = 190;
 
 static void draw_menu(void);
@@ -1110,7 +1110,7 @@ static void draw_frame(struct client *c)
 /* ------------------------------------------------------------ X11 icons */
 /* Icons are decoded once, cached as a colour pixmap plus a 1-bit alpha
  * mask, and copied by the X server thereafter. Desktop icons are at
- * most 24 px, taskbar pins 20 px and running-window icons 16 px: the
+ * most 24 px, taskbar pins 20 px and Windows-picker icons 16 px: the
  * normal freedesktop sizes, never enlarged. */
 static int xicon_fill(struct xicon *xi, struct rgba_image *img)
 {
@@ -1383,7 +1383,7 @@ static void expose_desktop(void)
 }
 
 /* ------------------------------------------------------------------- bar */
-struct bar_item { int kind; int idx; int x, w; };   /* kind 0=client 1=pin */
+struct bar_item { int idx; int x, w; };
 static struct bar_item bar_items[96];
 static int bar_n;
 
@@ -1400,34 +1400,14 @@ static void bar_layout(void)
     int end = bar_power_x() - 8;
     if (end < x) end = x;
 
-    /* pinned squares first at the fixed normal 34 px taskbar size */
+    /* The main bar contains permanent shortcuts only. Running windows
+     * live exclusively in the Windows picker, as in the original SCos;
+     * launching an app must not replace its pin or add another box. */
     for (int i = 0; i < npins && bar_n < 96; i++) {
-        int running = 0;
-        for (int k = 0; k < nclients; k++)
-            if (pins[i].match[0] && strstr(clients[k]->wclass, pins[i].match)) running = 1;
-        if (running || x + 34 > end) continue;
-        bar_items[bar_n].kind = 1; bar_items[bar_n].idx = i;
+        if (x + 34 > end) break;
+        bar_items[bar_n].idx = i;
         bar_items[bar_n].x = x; bar_items[bar_n].w = 34; bar_n++;
         x += 40;
-    }
-
-    /* running windows share only the space that is actually left;
-     * they may shrink, but never draw over the power button/clock */
-    int nrun = 0;
-    for (int i = 0; i < nclients; i++) if (!clients[i]->skip_taskbar) nrun++;
-    if (nrun && end > x) {
-        int bw = (end - x) / nrun - 6;
-        if (bw > 170) bw = 170;
-        if (bw < 28) bw = 28;
-        for (int i = 0; i < nclients && bar_n < 96; i++) {
-            if (clients[i]->skip_taskbar) continue;
-            if (x + 28 > end) break;
-            int w = bw;
-            if (x + w > end) w = end - x;
-            bar_items[bar_n].kind = 0; bar_items[bar_n].idx = i;
-            bar_items[bar_n].x = x; bar_items[bar_n].w = w; bar_n++;
-            x += w + 6;
-        }
     }
 }
 
@@ -1461,35 +1441,17 @@ static void draw_bar(void)
     bar_layout();
     for (int i = 0; i < bar_n; i++) {
         struct bar_item *it = &bar_items[i];
-        if (it->kind == 1) {
-            struct pin *p = &pins[it->idx];
-            int lit = bar_press == i || bar_hover == i ||
-                      (bar_flash_pin == it->idx && time(NULL) <= bar_flash_until);
-            fill(d, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
-            rect(d, it->x, by, 34, bh, PX.main);
-            struct xicon *xi = xicon_get(p->icon, bar_icon_size(20));
-            if (xicon_drawn(xi))
-                draw_xicon(d, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
-            else {
-                int gw = text_w(p->glyph);
-                text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph, PX.text);
-            }
-        } else {
-            struct client *c = clients[it->idx];
-            int foc = active_client == c;
-            fill(d, it->x, by, it->w, bh,
-                 foc || bar_press == i || bar_hover == i ? PX.bar_hi : PX.taskbar_bg);
-            rect(d, it->x, by, it->w, bh, PX.main);
-            int tx = it->x + 6;
-            if (xicon_drawn(c->icon)) {
-                draw_xicon(d, c->icon, tx, by + (bh - c->icon->h) / 2);
-                tx += c->icon->w + 4;
-            }
-            char title[288];
-            if (c->minimized) snprintf(title, sizeof(title), "[-] %s", c->title);
-            else snprintf(title, sizeof(title), "%s", c->title);
-            clipped_text(d, tx, centered_baseline(by, bh), title,
-                         it->x + it->w - tx - 4, c->minimized ? PX.title_off : PX.text);
+        struct pin *p = &pins[it->idx];
+        int lit = bar_press == i || bar_hover == i ||
+                  (bar_flash_pin == it->idx && time(NULL) <= bar_flash_until);
+        fill(d, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
+        rect(d, it->x, by, 34, bh, PX.main);
+        struct xicon *xi = xicon_get(p->icon, bar_icon_size(20));
+        if (xicon_drawn(xi))
+            draw_xicon(d, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
+        else {
+            int gw = text_w(p->glyph);
+            text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph, PX.text);
         }
     }
     /* power button */
@@ -1501,8 +1463,10 @@ static void draw_bar(void)
     if (radius > 7) radius = 7;
     if (radius < 3) radius = 3;
     int cx = px + pw / 2, cy = by + bh / 2 + 1;
+    /* A 270-degree arc centred on 90 degrees leaves its opening at the
+     * top, around the vertical stroke (0 degrees is the right side). */
     XDrawArc(dpy, d, gc, cx - radius, cy - radius, radius * 2, radius * 2,
-             45 * 64, 270 * 64);
+             135 * 64, 270 * 64);
     XDrawLine(dpy, d, gc, cx, cy - radius - 1, cx, cy);
     /* clock */
     time_t now = time(NULL);
@@ -1518,15 +1482,14 @@ static void draw_bar(void)
  * engines redraw a tiny page and then spend much longer scaling it back. */
 static int taskbar_rect_for_client(struct client *c, int *x, int *y, int *w, int *h)
 {
-    bar_layout();
-    for (int i = 0; i < bar_n; i++) {
-        if (bar_items[i].kind == 0 && clients[bar_items[i].idx] == c) {
-            *x = bar_items[i].x; *y = screen_h - bar_h + 6;
-            *w = bar_items[i].w; *h = bar_h - 12;
-            return 1;
-        }
-    }
-    return 0;
+    /* Running windows no longer own taskbar boxes. Both transitions use
+     * the stable Windows-picker target, so animation and client scaling
+     * do not depend on a temporary running-window layout. */
+    (void)c;
+    if (!bar_win) return 0;
+    *x = 48; *y = screen_h - bar_h + 6;
+    *w = 110; *h = bar_h - 12;
+    return 1;
 }
 
 static Pixmap anim_pm = None;
@@ -1631,8 +1594,10 @@ static void draw_launcher(void)
         struct xicon *xi = xicon_get(it->icon, 20);
         if (xicon_drawn(xi)) draw_xicon(d, xi, 10, yy - 1);
         else text_out(d, 12, yy + 4 + font->ascent, it->glyph, PX.main);
+        /* SCos keeps launcher names in the normal text colour on hover;
+         * title_text is for solid accent titlebars and was too dark here. */
         clipped_text(d, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
-                     launch_offset + r == launch_sel ? PX.title_text : PX.text);
+                     PX.text);
         if (it->app_idx >= 0 && app_is_pinned(it->app_idx))
             text_out(d, 262, yy + 4 + font->ascent, "PIN", PX.main);
         yy += 24;
@@ -1665,6 +1630,7 @@ static void menu_close(void)
     if (menu_kind == MENU_NONE) return;
     menu_kind = MENU_NONE;
     menu_hover = -1;
+    menu_bar_release = 0;
     XUnmapWindow(dpy, menu_win);
     XUngrabKeyboard(dpy, CurrentTime);
 }
@@ -1712,8 +1678,19 @@ static void draw_menu(void)
     fill(d, 0, 0, w, h, PX.win_bg);
     rect(d, 0, 0, w, h, PX.main);
     for (int i = 0; i < menu_n; i++) {
-        if (i == menu_hover) fill(d, 2, 3 + i * 24, w - 4, 24, PX.bar_hi);
-        clipped_text(d, 10, 3 + i * 24 + 4 + font->ascent, menu_labels[i], w - 20,
+        int row_y = 3 + i * 24;
+        if (i == menu_hover) fill(d, 2, row_y, w - 4, 24, PX.bar_hi);
+        int text_x = 10;
+        if (menu_kind == MENU_PICKER) {
+            /* Keep the real app icon with its window now that the main
+             * taskbar no longer has running-window buttons. The stored
+             * window ID may have closed; a stale row simply has no icon. */
+            struct client *c = find_client(menu_item_targets[i]);
+            if (c && xicon_drawn(c->icon))
+                draw_xicon(d, c->icon, 8, row_y + (24 - c->icon->h) / 2);
+            text_x = 34;
+        }
+        clipped_text(d, text_x, row_y + 4 + font->ascent, menu_labels[i], w - text_x - 10,
                      i == menu_hover ? PX.title_text : PX.text);
     }
     surface_present(menu_win, pm, w, h);
@@ -1816,11 +1793,12 @@ static void menu_action(int idx)
     }
 }
 
-static void pick_window(int idx)
+static void pick_window(Window target)
 {
-    /* the "Windows" picker: SCos listed "[+]/[-]/title" rows in a menu */
-    if (idx < 0 || idx >= nclients) return;
-    activate(clients[idx], 1);
+    /* Rows keep their own window IDs: another client closing while the
+     * menu is open must not make a click activate a different window. */
+    struct client *c = find_client(target);
+    if (c) activate(c, 1);
 }
 
 /* keyboard focus cycling, SCos taskbar order */
@@ -1849,6 +1827,13 @@ static void on_button(XButtonEvent *e)
         draw_desktop();
     }
 
+    /* Taskbar menus open on press. Do not let the release from that very
+     * same click immediately dismiss the menu before its next click. */
+    if (menu_kind != MENU_NONE && menu_bar_release &&
+        e->type == ButtonRelease && w == bar_win) {
+        menu_bar_release = 0;
+        return;
+    }
     if (menu_kind != MENU_NONE && w != menu_win) {
         menu_close();
         if (passive_client_press) XAllowEvents(dpy, ReplayPointer, e->time);
@@ -1859,14 +1844,23 @@ static void on_button(XButtonEvent *e)
         int idx = (e->y - 3) / 24;
         if (menu_kind == MENU_MESSAGE) menu_close();
         else if (menu_kind == MENU_PICKER) {
-            if (idx >= 0 && idx < menu_n) { int ci = nclients - 1 - idx; menu_close(); pick_window(ci); }
-            else menu_close();
+            if (idx >= 0 && idx < menu_n) {
+                Window target = menu_item_targets[idx];
+                menu_close(); pick_window(target);
+            } else menu_close();
         }
         else if (idx >= 0 && idx < menu_n) menu_action(idx);
         else menu_close();
         return;
     }
     if (tool_kind != TOOL_NONE) {
+        /* A pin/launcher/desktop press opens these panels. Its matching
+         * release is not an outside click and must not close them again. */
+        if (tool_release_pending && e->type == ButtonRelease) {
+            tool_release_pending = 0;
+            return;
+        }
+        if (e->type == ButtonPress) tool_release_pending = 0;
         if (w == tool_win) tool_button(e);
         else {
             tool_close();
@@ -1921,11 +1915,13 @@ static void on_button(XButtonEvent *e)
         }
         if (e->x >= 48 && e->x < 158 && e->y >= 6 && e->y < bar_h - 6) {
             /* Windows picker as a SCos-style menu of open windows */
-            if (!nclients) { wm_notify_no_windows(); return; }
+            if (!nclients) { wm_notify_no_windows(); menu_bar_release = 1; return; }
             menu_kind = MENU_PICKER;
+            menu_hover = -1;
             menu_n = nclients > 8 ? 8 : nclients;
             for (int i = 0; i < menu_n; i++) {
                 struct client *c = clients[nclients - 1 - i];
+                menu_item_targets[i] = c->win;
                 snprintf(menu_labels[i], 64, "%s %.55s", c->minimized ? "[-]" :
                          (active_client == c ? "[+]" : "   "), c->title);
             }
@@ -1935,43 +1931,32 @@ static void on_button(XButtonEvent *e)
             XMapWindow(dpy, menu_win);
             XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
             draw_menu();
+            menu_bar_release = 1;
             return;
         }
         int pw_x = bar_power_x();
         if (e->x >= pw_x && e->x < pw_x + 34 && e->y >= 6 && e->y < bar_h - 6) {
             menu_open(MENU_POWER, pw_x - 140, screen_h - bar_h - (6 * 24 + 8), None);
+            menu_bar_release = 1;
             return;
         }
         for (int i = 0; i < bar_n; i++) {
             struct bar_item *it = &bar_items[i];
             if (e->x >= it->x && e->x < it->x + it->w &&
                 e->y >= 6 && e->y < bar_h - 6) {
-                if (it->kind == 1) {
-                    if (e->button == Button1) {
-                        /* Instant visible feedback on mousedown, plus a
-                         * short "starting" flash afterwards: launching a
-                         * real app can take a second or two, and with no
-                         * response at all a normal click looked like it
-                         * had to be held down to register. */
-                        bar_press = i;
-                        bar_flash_pin = it->idx;
-                        bar_flash_until = time(NULL) + 2;
-                        draw_bar();
-                        launch_pin(it->idx);
-                        bar_press = -1; /* the two-second launch flash is not a held button */
-                        draw_bar();
-                    }
-                } else {
-                    struct client *c = clients[it->idx];
-                    if (e->button == Button1) {
-                        bar_press = i;
-                        draw_bar();
-                        bar_press = -1;
-                        if (active_client == c && !c->minimized) minimize(c);
-                        else activate(c, 1);
-                    } else if (e->button == Button3) {
-                        menu_open(MENU_TITLE, it->x, screen_h - bar_h - (3 * 24 + 8), c->win);
-                    }
+                if (e->button == Button1) {
+                    /* Instant visible feedback on mousedown, plus a
+                     * short "starting" flash afterwards: launching a
+                     * real app can take a second or two, and with no
+                     * response at all a normal click looked like it
+                     * had to be held down to register. */
+                    bar_press = i;
+                    bar_flash_pin = it->idx;
+                    bar_flash_until = time(NULL) + 2;
+                    draw_bar();
+                    launch_pin(it->idx);
+                    bar_press = -1; /* the two-second launch flash is not a held button */
+                    draw_bar();
                 }
                 return;
             }
@@ -2745,6 +2730,7 @@ static void tool_close(void)
 {
     if (tool_kind == TOOL_NONE) return;
     tool_kind = TOOL_NONE;
+    tool_release_pending = 0;
     settings_field = 0;
     XUnmapWindow(dpy, tool_win);
     XUngrabKeyboard(dpy, CurrentTime);
@@ -2755,6 +2741,7 @@ static void tool_open(int kind)
     menu_close();
     if (launch_open) launcher_toggle(0);
     tool_kind = kind;
+    tool_release_pending = 1;
     settings_field = 0;
     if (kind == TOOL_SYSMON) refresh_sysmon();
     int x = (screen_w - TOOL_W) / 2, y = (screen_h - bar_h - TOOL_H) / 2;
@@ -3113,7 +3100,10 @@ int main(int argc, char **argv)
             case UnmapNotify: {
                 struct client *c = find_client(ev.xunmap.window);
                 if (c && ev.xunmap.window == c->win && !c->minimized)
-                    remove_client(c, 0);
+                    /* Withdrawal is not destruction: return the client to
+                     * the root before destroying only our frame. Apps that
+                     * rapidly unmap/reuse a window must not lose that window. */
+                    remove_client(c, 1);
                 break; }
             case DestroyNotify: {
                 struct client *c = find_client(ev.xdestroywindow.window);

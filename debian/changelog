@@ -1,3 +1,19 @@
+scoswm (0.5.2) unstable; urgency=medium
+
+  * Keep only permanent pinned shortcuts on the main taskbar. Running
+    windows now appear exclusively in the Windows picker, with their real
+    application icons and stable row targets; animations target the picker.
+  * Preserve client windows across ordinary unmap/withdrawal by reparenting
+    them to the root before destroying only the WM frame. This fixes the
+    destructive rapid unmap/reuse path found in close/reopen stress testing.
+  * Keep launcher application names readable on their highlighted rows and
+    rotate the power symbol so its circular opening faces upward.
+  * Keep taskbar menus and built-in Settings/SysMon panels open after the
+    opening click's release. Add graphical coverage for picker-only operation,
+    20 window-reuse cycles and live persisted 28/32 px taskbar scaling.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 00:40:00 -0400
+
 scoswm (0.5.1) unstable; urgency=medium
 
   * Double-buffer taskbar, frame, launcher, menu, SysMon and Settings

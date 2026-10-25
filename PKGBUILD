@@ -1,6 +1,6 @@
 # Maintainer: scoswm contributors
 pkgname=scoswm
-pkgver=0.5.1
+pkgver=0.5.2
 pkgrel=1
 pkgdesc="SCos-styled lightweight X11 window manager for real Linux applications"
 arch=('x86_64' 'aarch64')

@@ -28,7 +28,7 @@
 #include <unistd.h>
 
 #ifndef VERSION
-#define VERSION "0.5.1"
+#define VERSION "0.5.2"
 #endif
 #define TAB_H 22
 #define TAB_W 74

@@ -101,6 +101,33 @@ function property(server, win, name) {
                     assert.notEqual(barPixel(x, y), main, `taskbar glyph escaped box at ${x},${y}`);
             }
         }
+        // At 28px the power circle is centred at (667,15), radius 6.
+        // Its right-hand side must be drawn: a right-side gap was the old,
+        // incorrectly rotated symbol; the gap is now upward around the stem.
+        assert.equal(barPixel(673, 15), main, 'power symbol does not open upward');
+
+        // Launcher selection keeps application names in the normal bright
+        // text colour, rather than the dark text-on-accent title colour.
+        server.injectPointerMove(20, 586);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        const launcher = await waitFor(() => server.root.children.find(w => w.width === 300 && w.height === 308 && w.mapped), 'launcher');
+        const launchPixel = (x, y) => launcher.raster.data[y * launcher.width + x] & 0xffffff;
+        await waitFor(() => launchPixel(0, 0) === main, 'launcher backing-image paint');
+        server.compose();
+        let brightNamePixels = 0, darkNamePixels = 0;
+        for (let y = 53; y < 75; y++) {
+            for (let x = 44; x < 150; x++) {
+                if (launchPixel(x, y) === main) brightNamePixels++;
+                if (launchPixel(x, y) === 0x001500) darkNamePixels++;
+            }
+        }
+        assert.ok(brightNamePixels > 0, 'selected launcher application name was not painted in normal text colour');
+        assert.equal(darkNamePixels, 0, 'selected launcher application name used dark titlebar text');
+        server.injectPointerMove(20, 586);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => !launcher.mapped, 'launcher close');
 
         const { X, display, connection } = await new Promise((resolve, reject) => {
             const connection = x11.createClient({ display: displayName }, (err, display) => {
@@ -122,7 +149,7 @@ function property(server, win, name) {
             const w = server.resources.get(wid);
             return w && w.parent && w.parent.id !== root && w.mapped && w.parent.mapped ? w : null;
         }, 'managed test client');
-        const frame = clientWin.parent;
+        let frame = clientWin.parent;
         assert.equal(clientWin.width, 400);
         assert.equal(clientWin.height, 300);
         assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(bar), 'frame must stack below taskbar');
@@ -141,10 +168,19 @@ function property(server, win, name) {
         await delay(120);
         assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(bar), 'client raise covered taskbar');
 
-        // The running item begins at x=328 with four unrunning pins. Press alone
-        // must minimise; the real client must retain 400x300 throughout.
+        // The four permanent pin squares remain, but no running-window box
+        // may appear in the empty area between the pins and power control.
+        assert.equal(barPixel(168, 6), main, 'running app replaced a pinned shortcut');
+        for (let y = 6; y < 22; y++) {
+            for (let x = 328; x < 640; x++)
+                assert.notEqual(barPixel(x, y), main, `running-window taskbar box at ${x},${y}`);
+        }
+
+        // Minimise from the titlebar, then restore through the Windows picker.
+        // The real client must retain 400x300 throughout both animations.
         let mark = configureLog.length;
-        server.injectPointerMove(350, 586);
+        const minimiseX = frame.width - 66;
+        server.injectPointerMove(frame.absX() + minimiseX + 9, frame.absY() + 10);
         server.injectButton(1, true);
         await waitFor(() => !clientWin.mapped && !frame.mapped, 'minimise on mouse press');
         await delay(100);
@@ -156,16 +192,43 @@ function property(server, win, name) {
         await delay(60);
 
         mark = configureLog.length;
+        server.injectPointerMove(100, 586);
         server.injectButton(1, true);
-        await waitFor(() => clientWin.mapped && frame.mapped, 'restore on one mouse press');
+        server.injectButton(1, false);
+        const picker = await waitFor(() => server.root.children.find(w => w.x === 48 && w.width === 300 && w.height === 30 && w.mapped), 'Windows picker');
+        await delay(100);
+        assert.equal(picker.mapped, true, 'opening click release dismissed the Windows picker');
+        server.injectPointerMove(picker.absX() + 40, picker.absY() + 12);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => clientWin.mapped && frame.mapped, 'restore through Windows picker');
         await delay(100);
         assert.equal(clientWin.width, 400, 'restore changed client width');
         assert.equal(clientWin.height, 300, 'restore changed client height');
         assert.equal(configureLog.slice(mark).filter(e => e.wid === wid && (e.mask & 12)).length, 0,
             `restore sent a real client resize: ${JSON.stringify(configureLog.slice(mark))}`);
-        server.injectButton(1, false);
-        await delay(60);
         assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(bar), 'restore stacked frame above taskbar');
+
+        // Twenty rapid withdrawals/reuses must preserve the application window.
+        // The old WM destroyed it with the frame on the very first unmap.
+        for (let cycle = 0; cycle < 20; cycle++) {
+            const oldFrame = frame;
+            X.UnmapWindow(wid);
+            await waitFor(() => {
+                const w = server.resources.get(wid);
+                return w && w.parent && w.parent.id === root && !server.resources.has(oldFrame.id);
+            }, `withdraw/reparent cycle ${cycle + 1}`);
+            assert.ok(server.resources.has(wid), `client was destroyed on unmap cycle ${cycle + 1}`);
+            X.MapWindow(wid);
+            await waitFor(() => {
+                const w = server.resources.get(wid);
+                return w && w.parent && w.parent.id !== root && w.mapped && w.parent.mapped;
+            }, `remanage reused client cycle ${cycle + 1}`);
+            frame = clientWin.parent;
+        }
+        assert.equal(clientWin.width, 400);
+        assert.equal(clientWin.height, 300);
+        assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(bar), 'reopened frame covered taskbar');
 
         // Start the real Bash terminal and check cursor inheritance, icon-enabled
         // desktop matching, live resize buffering, and move-without-resize.
@@ -182,9 +245,33 @@ function property(server, win, name) {
         assert.equal(terminal.exitCode, null, `terminal exited: ${terminalLog}`);
         assert.ok(server.root.cursor, 'WM did not establish a root cursor');
         assert.equal(termWin.cursor, 0, 'terminal overrode session cursor instead of inheriting it');
-        await waitFor(() => barPixel(497, 8) === main, 'dedicated SCos terminal taskbar icon');
+        const countMainPixels = (pixel, x0, y0, w, h) => {
+            let count = 0;
+            for (let y = y0; y < y0 + h; y++)
+                for (let x = x0; x < x0 + w; x++) if (pixel(x, y) === main) count++;
+            return count;
+        };
+        // The terminal pin's image is 12x12 at this bar height. Check its
+        // interior, not a border pixel shared with an ordinary control box.
+        await waitFor(() => countMainPixels(barPixel, 179, 8, 12, 12) > 20,
+            'dedicated SCos terminal taskbar pin icon');
 
         const termFrame = termWin.parent;
+        // Running-window access now lives only in the picker, and the real
+        // dedicated application icon travels with its window into that menu.
+        server.injectPointerMove(100, 586);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        const appPicker = await waitFor(() => server.root.children.find(w => w.x === 48 && w.width === 300 && w.height === 54 && w.mapped), 'two-window picker');
+        const pickerPixel = (x, y) => appPicker.raster.data[y * appPicker.width + x] & 0xffffff;
+        await waitFor(() => countMainPixels(pickerPixel, 8, 9, 12, 12) > 20,
+            'Windows picker real SCos Terminal icon paint');
+        server.compose();
+        server.injectPointerMove(appPicker.absX() + 40, appPicker.absY() + 12);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => !appPicker.mapped, 'picker activation');
+
         const startW = termWin.width, startH = termWin.height;
         const resizeX = termFrame.absX() + termFrame.width - 5;
         const resizeY = termFrame.absY() + termFrame.height - 5;
@@ -214,12 +301,41 @@ function property(server, win, name) {
         assert.equal(termWin.width, startW - 200);
         assert.equal(termWin.height, startH - 90);
 
+        // Open Settings from its permanent pin with a normal press/release.
+        // The release must not close the panel, and live scaling must update
+        // both the real bar and the persisted configuration.
+        server.injectPointerMove(305, 586);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        const settings = await waitFor(() => server.root.children.find(w => w.width === 540 && w.height === 390 && w.mapped), 'Settings panel');
+        await delay(100);
+        assert.equal(settings.mapped, true, 'opening click release closed Settings');
+        server.injectPointerMove(settings.absX() + 220, settings.absY() + 270);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => bar.height === 32 && bar.y === 568, 'live 32px taskbar scaling');
+        const configFile = path.join(home, '.config/scoswm/scoswm.conf');
+        await waitFor(() => /bar_height\s*=\s*32/.test(fs.readFileSync(configFile, 'utf8')),
+            'taskbar height configuration save');
+        const savedConfig = fs.readFileSync(configFile, 'utf8');
+        assert.match(savedConfig, /bar_height\s*=\s*32/);
+        server.injectPointerMove(settings.absX() + 116, settings.absY() + 270);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => bar.height === 28 && bar.y === 572, 'live 28px taskbar restoration');
+        server.injectPointerMove(settings.absX() + 520, settings.absY() + 12);
+        server.injectButton(1, true);
+        server.injectButton(1, false);
+        await waitFor(() => !settings.mapped, 'Settings close');
+
         assert.deepEqual(directDraws, [], `visible-window drawing bypassed backing pixmaps: ${JSON.stringify(directDraws)}`);
         assert.deepEqual(handlerErrors, [], `X server handler errors: ${handlerErrors.map(x => String(x.err)).join(', ')}`);
-        console.log('graphical WM: border, centered labels, 28px taskbar bounds OK');
-        console.log('graphical WM: close hover, dock stacking, single-press minimise/restore OK');
+        console.log('graphical WM: border, centered labels, 28px taskbar bounds and upward power gap OK');
+        console.log('graphical WM: readable launcher selection, close hover and dock stacking OK');
+        console.log('graphical WM: pinned-only bar, picker minimise/restore and 20 safe window-reuse cycles OK');
         console.log('graphical WM: no real client resize during animation or move OK');
-        console.log('graphical terminal: dedicated icon, themed cursor inheritance and buffered resize OK');
+        console.log('graphical terminal: pin/picker icons, themed cursor inheritance and buffered resize OK');
+        console.log('graphical Settings: mouse-open persistence and live 28/32px taskbar scaling OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);

@@ -19,7 +19,7 @@ it could only run SCos's built-in apps.
 |---|---|
 | `theme.c` four palettes | Copied verbatim into `src/util.c` (`scos_themes[]`), unit-tested; config can also define a custom palette field-by-field |
 | `wm.c` 26 px titlebar, 18 px min/max/close, accent when focused, `color_blend` when not | Same geometry and colours in `src/scoswm.c: draw_frame()`; buttons act on the real client window (ICCCM `WM_DELETE_WINDOW`, EWMH state for maximise/minimise) |
-| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()`; the picker is a real window list, pins launch/focus real apps |
+| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()`; only permanent pins occupy the main bar, while the picker lists real running windows with their icons and is the animation target for minimise/restore |
 | Launcher grid + `user/apps` | Launcher panel over the taskbar indexing freedesktop `.desktop` files, type-to-search — the Linux-native equivalent |
 | Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
 | Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff |
@@ -30,15 +30,18 @@ it could only run SCos's built-in apps.
 
 ICCCM: `WM_NAME`, `WM_CLASS`, `WM_NORMAL_HINTS` (min/max size, resize
 increments), `WM_TRANSIENT_FOR`, `WM_PROTOCOLS`
-(`WM_DELETE_WINDOW`, `WM_TAKE_FOCUS`), `WM_STATE`.
+(`WM_DELETE_WINDOW`, `WM_TAKE_FOCUS`), `WM_STATE`. An ordinary unmap is
+handled as withdrawal, not window destruction: the client is reparented
+to the root before only its SCosWM frame is destroyed, so it can map again.
 EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 `_NET_SUPPORTING_WM_CHECK`, `_NET_WM_NAME`, `_NET_WM_DESKTOP`,
 `_NET_NUMBER_OF_DESKTOPS`, `_NET_CURRENT_DESKTOP`, `_NET_WORKAREA`,
 `_NET_WM_STRUT_PARTIAL` (respected from other panels too),
 `_NET_FRAME_EXTENTS`, `_NET_CLOSE_WINDOW`, `_NET_MOVERESIZE_WINDOW`,
 `_NET_WM_STATE` (maximized/fullscreen/hidden), window types
-(dock/desktop/notification left unmanaged; utility/splash kept off the
-taskbar). Root supports RandR-driven resize via its ConfigureNotify.
+(dock/desktop/notification left unmanaged; ordinary and utility windows
+are reachable from the Windows picker). Root supports RandR-driven resize
+via its ConfigureNotify.
 
 By design: a single workspace only (no pager/workspace daemon) and no
 compositing effects. `_NET_WM_ICON` and freedesktop icon images are used
@@ -56,10 +59,12 @@ ISO10646 font when available for its Unicode cell grid.
 - `tests/run_graphical.sh`: uses a pure-JavaScript X11 server to drive
   the real Xlib WM and terminal without Xvfb. Set `SCOSWM_NODE_X11` to a
   `sidorares/node-x11` checkout containing `lib/xserver`. The saved
-  regression covers buffered drawing, desktop/taskbar geometry, close
-  hover, taskbar stacking and single-press activation, resize-free
-  minimise/restore, terminal icon/cursor behavior and pointer-driven
-  terminal resize/move.
+  regression covers buffered drawing, desktop/taskbar geometry, power and
+  launcher colours, close hover, taskbar stacking, the pinned-only bar,
+  picker activation and resize-free minimise/restore, 20 window-reuse
+  cycles, terminal pin/picker icons and cursor behavior, pointer-driven
+  terminal resize/move, and mouse-opened Settings with live persisted
+  taskbar scaling.
 - Earlier development runs also verified adoption, maximise/restore,
   Alt+Tab, desktop-icon and launcher launching, and config-file theming;
   `docs/scoswm.png` was captured from such a run.

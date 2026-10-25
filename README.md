@@ -129,9 +129,9 @@ startx
 | Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too. Choose **All installed apps...** to browse without typing; the mouse wheel scrolls the list |
 | Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
 | Add/remove Home apps | Right-click the desktop and choose **Add/Remove App...**, or right-click any searched app in the launcher. Pinned apps appear on the desktop and taskbar and are saved in `pins` |
-| Window list | "Windows N" taskbar button |
+| Window list | "Windows N" taskbar button. Running windows appear only here, with their real icons; the main taskbar keeps only your pinned shortcuts |
 | Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
-| Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click titlebar/taskbar button for a menu. Minimise and restore have a short transition |
+| Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click the titlebar for a menu. Restore minimised windows from **Windows N**; minimise/restore transitions target that picker and never resize the real application |
 | Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
@@ -143,8 +143,8 @@ startx
 Desktop, taskbar and launcher icons are the apps' real
 `Icon=` images, resolved from the freedesktop icon theme and
 `/usr/share/pixmaps` at the normal small sizes — 24 px on
-the desktop, up to 20 px in taskbar pins and 16 px beside running-window
-titles (smaller automatically when the taskbar is shortened). PNG and XPM
+the desktop, up to 20 px in taskbar pins and 16 px beside titles in the
+Windows picker (smaller automatically when the taskbar is shortened). PNG and XPM
 are decoded directly; SVG themes such as Breeze use the recommended
 `gdk-pixbuf`/`librsvg` loader when installed. Icons are decoded once and
 cached as X pixmaps; only an app with no readable image keeps the SCos
@@ -259,9 +259,12 @@ WM, manages a real Xlib client
 SKIP. `tests/run_graphical.sh` additionally runs headless graphical
 regressions when a `node-x11` checkout with `lib/xserver` is available:
 set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry,
-28 px taskbar bounds, close hover, dock stacking, single-press window
-activation, resize-free minimise/restore, the dedicated terminal icon,
-cursor inheritance, and buffered terminal resize/move behavior.
+28 px taskbar bounds, the upward power-symbol opening, readable launcher
+selection, close hover, dock stacking, the pinned-only taskbar, picker-based
+resize-free minimise/restore, 20 rapid window-withdrawal/reuse cycles, real
+terminal icons in both the pin and Windows picker, cursor inheritance,
+buffered terminal resize/move behavior, and mouse-opened Settings with live
+persisted 28/32 px taskbar scaling.
 
 `PORTING.md` documents how each piece of the SCos desktop maps onto
 this WM and where real-application behaviour necessarily differs.
