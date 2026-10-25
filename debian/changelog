@@ -1,3 +1,23 @@
+scoswm (0.5.4) unstable; urgency=medium
+
+  * Make taskbar and desktop shortcuts independent, with one-time legacy
+    migration and preservation of an explicitly empty desktop list. Add
+    per-app Launch/Add/Move/Remove menus on launcher, taskbar and desktop.
+  * Add persistent nearest-grid desktop dragging, taskbar reordering,
+    bidirectional cross-surface drag/drop, snap/insertion previews and a
+    visible click-hold rubber-band desktop selection rectangle.
+  * Add live Settings controls for independent shortcut lists, 24/32/48 px
+    desktop icons and wallpaper-grid visibility. Move the two-pixel right
+    desktop rule 16 px inside the physical edge and align the border rect.
+  * Harden malformed PNG handling, multi-size _NET_WM_ICON parsing and
+    optional gdk-pixbuf loader lifetime. Add targeted external Files-launch
+    and 250-app/600-wheel scrolling regressions without assuming headless
+    success proves the originally reported physical crashes are resolved.
+  * Declare the Arch core-font runtime dependency and expand normal and
+    ASan/UBSan graphical, configuration and malformed-image test coverage.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 02:05:00 -0400
+
 scoswm (0.5.3) unstable; urgency=medium
 
   * Bundle four dedicated SCos application icon sets (Terminal, Files,

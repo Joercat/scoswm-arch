@@ -27,8 +27,9 @@ PTY. Files opens your configured/detected Linux file manager; SysMon and
 Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
 (including NVIDIA proprietary vs nouveau detection) and only samples
 while open. Settings changes the theme,
-taskbar height, program choices and pins, applies them live and saves
-the normal config file.
+taskbar height, program choices, independent taskbar/desktop shortcuts,
+desktop icon size and wallpaper grid, applies them live and saves the
+normal config file.
 
 ## Why X11 (and why it is the lightweight choice)
 
@@ -128,7 +129,9 @@ startx
 |---|---|
 | Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too. Choose **All installed apps...** to browse without typing; the mouse wheel scrolls the list |
 | Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
-| Add/remove Home apps | Right-click the desktop and choose **Add/Remove App...**, or right-click any searched app in the launcher. Pinned apps appear on the desktop and taskbar and are saved in `pins` |
+| Add/move/remove apps | Right-click an app in the launcher, a taskbar pin, or a desktop icon for **Launch**, surface-specific **Add**/**Move**, and **Remove** actions. Taskbar `pins` and `desktop_pins` are independent; removing one surface's shortcut does not remove the other |
+| Arrange shortcuts | Drag a desktop icon to snap it to the nearest grid slot. Drag taskbar icons to reorder them, or drag in either direction between the desktop and taskbar to move a shortcut. The snap outline/insertion marker previews the drop and the layout is saved |
+| Select desktop icons | Click an icon, or click-hold-drag empty desktop to paint a rubber-band selection rectangle. Right-click empty desktop for the normal desktop menu |
 | Window list | "Windows N" taskbar button. Running windows appear only here, with their real icons; the main taskbar keeps only your pinned shortcuts |
 | Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
 | Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click the titlebar for a menu. Restore minimised windows from **Windows N**; minimise/restore transitions target that picker and never resize the real application |
@@ -145,8 +148,8 @@ Terminal, Files, SysMon and Settings use their bundled `scos-terminal`,
 not depend on generic theme icon names. Other desktop, taskbar and
 launcher icons are the apps' real `Icon=` images, resolved from the
 freedesktop icon theme and `/usr/share/pixmaps` at the normal small
-sizes — 24 px on
-the desktop, up to 20 px in taskbar pins and 16 px beside titles in the
+sizes — 24, 32 or 48 px on
+the desktop (24 px by default), up to 20 px in taskbar pins and 16 px beside titles in the
 Windows picker (smaller automatically when the taskbar is shortened). PNG and XPM
 are decoded directly; SVG themes such as Breeze use the recommended
 `gdk-pixbuf`/`librsvg` loader when installed. Icons are decoded once and
@@ -244,11 +247,18 @@ own pixels, and SCosWM does not modify browser profiles behind your back.
 theme = blue-sky
 terminal =                 # empty = SCos Terminal; or name another command
 pins = terminal, files, sysmon, settings, firefox, code
+desktop_pins = terminal, files, sysmon, settings
+desktop_slots = 0,1,2,3    # maintained automatically by desktop dragging
+desktop_icon_size = 24     # 24, 32 or 48
+desktop_grid = 1
 bar_height = 40
 ```
 
-The built-in **Settings** panel applies themes and taskbar height
-live and saves this file; editing it by hand also works. The
+The built-in **Settings** panel applies themes, taskbar height, desktop
+icon size and wallpaper-grid visibility live and saves this file; editing
+it by hand also works. A legacy configuration without `desktop_pins`
+copies its shared `pins` to both surfaces once. After that the lists are
+independent, and an explicitly empty `desktop_pins =` stays empty. The
 power/desktop menus have a **Restart WM** entry that keeps your
 windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 `scoswm-session`.
@@ -286,7 +296,12 @@ stacking, the pinned-only taskbar, picker-based resize-free
 minimise/restore, 20 rapid window-withdrawal/reuse cycles, real images for
 all four built-ins, Qt/GTK cursor settings and cursor inheritance, buffered
 terminal resize/move behavior, and mouse-opened Settings with live persisted
-28/32 px taskbar scaling.
+28/32 px taskbar scaling. It also exercises persistent desktop snapping,
+bidirectional shortcut drag/drop and previews, independent context-menu
+add/remove actions, visible rubber-band selection, 24/32/48 px icons and
+grid toggling. Crash-path regressions include 12 external Files launches
+with live multi-size client-icon changes and 600 wheel events through 250
+installed apps with separate PNG cache entries.
 
 `PORTING.md` documents how each piece of the SCos desktop maps onto
 this WM and where real-application behaviour necessarily differs.

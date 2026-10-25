@@ -29,7 +29,12 @@ struct scos_config {
     char terminal[160];    /* "" = auto-detect */
     char files[160];       /* "" = auto-detect, used by the Files pin */
     char font[160];        /* X core font name, "" = WM default list */
-    char pins[1024];       /* comma-separated .desktop ids or commands */
+    char pins[1024];       /* taskbar: comma-separated .desktop ids or commands */
+    char desktop_pins[1024]; /* independent desktop shortcuts; may explicitly be empty */
+    char desktop_slots[512]; /* comma-separated grid slots parallel to desktop_pins */
+    int has_desktop_pins;  /* distinguishes an empty list from a legacy shared-pin config */
+    int desktop_grid;      /* gradient wallpaper grid enabled */
+    int desktop_icon_size; /* 24, 32 or 48 px */
     int bar_height;        /* SCos used 40 */
 };
 void config_defaults(struct scos_config *cfg);

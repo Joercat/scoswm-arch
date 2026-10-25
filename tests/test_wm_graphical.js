@@ -56,7 +56,8 @@ function property(server, win, name) {
 
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'scoswm-graphical-'));
     fs.mkdirSync(path.join(home, '.config/scoswm'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.config/scoswm/scoswm.conf'), 'bar_height=28\npins=terminal,files,sysmon,settings\n');
+    fs.writeFileSync(path.join(home, '.config/scoswm/scoswm.conf'),
+        `bar_height=28\npins=terminal,files,sysmon,settings\nfiles=${path.join(repo, 'test_file_client')}\n`);
     fs.mkdirSync(path.join(home, '.local/share/applications'), { recursive: true });
     fs.mkdirSync(path.join(home, '.local/share/icons'), { recursive: true });
     fs.copyFileSync(path.join(repo, 'packaging/scos-terminal.desktop'), path.join(home, '.local/share/applications/scos-terminal.desktop'));
@@ -126,8 +127,9 @@ function property(server, win, name) {
         });
         server.compose();
         const rootPixel = (x, y) => server.root.raster.data[y * 800 + x] & 0xffffff;
-        assert.equal(rootPixel(798, 100), main, 'inner right desktop border');
-        assert.equal(rootPixel(799, 100), main, 'outer right desktop border');
+        assert.equal(rootPixel(783, 100), main, 'inset right desktop border');
+        assert.equal(rootPixel(784, 100), main, 'second inset right desktop border column');
+        assert.notEqual(rootPixel(799, 100), main, 'right border still depends on the physical edge');
         assert.equal(rootPixel(700, 571), main, 'bottom desktop border');
 
         // "Files" is five 8px glyphs in an 80px cell at x=104: centered x=124.
@@ -404,6 +406,11 @@ function property(server, win, name) {
         server.injectButton(1, false);
         await waitFor(() => bar.height === 32 && bar.y === 568, 'live 32px taskbar scaling');
         const configFile = path.join(home, '.config/scoswm/scoswm.conf');
+        const configValue = name => {
+            const line = fs.readFileSync(configFile, 'utf8').split('\n')
+                .find(s => new RegExp(`^\\s*${name}\\s*=`).test(s));
+            return line ? line.slice(line.indexOf('=') + 1).trim() : null;
+        };
         await waitFor(() => /bar_height\s*=\s*32/.test(fs.readFileSync(configFile, 'utf8')),
             'taskbar height configuration save');
         const savedConfig = fs.readFileSync(configFile, 'utf8');
@@ -412,10 +419,215 @@ function property(server, win, name) {
         server.injectButton(1, true);
         server.injectButton(1, false);
         await waitFor(() => bar.height === 28 && bar.y === 572, 'live 28px taskbar restoration');
+
+        server.injectPointerMove(settings.absX() + 400, settings.absY() + 283);
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_icon_size') === '32', '32px desktop icon save');
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_icon_size') === '48', '48px desktop icon save');
+        server.injectPointerMove(settings.absX() + 316, settings.absY() + 283);
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_icon_size') === '32', '32px desktop icon reduction');
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_icon_size') === '24', '24px desktop icon restoration');
+        server.compose();
+        const gridPixel = rootPixel(64, 100);
+        server.injectPointerMove(settings.absX() + 480, settings.absY() + 283);
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_grid') === '0', 'desktop grid configuration save');
+        server.compose();
+        assert.notEqual(rootPixel(64, 100), gridPixel, 'wallpaper grid toggle did not repaint');
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_grid') === '1', 'desktop grid restoration');
+
         server.injectPointerMove(settings.absX() + 520, settings.absY() + 12);
         server.injectButton(1, true);
         server.injectButton(1, false);
         await waitFor(() => !settings.mapped, 'Settings close');
+
+        // Clear the real clients so every desktop gesture below reaches the
+        // root window, just as it would on an empty physical desktop.
+        X.DestroyWindow(wid);
+        if (terminal.exitCode === null) terminal.kill('SIGKILL');
+        await waitFor(() => terminal.exitCode !== null || terminal.signalCode !== null,
+            'standalone terminal exit');
+        await delay(200);
+
+        const click = (x, y, button = 1) => {
+            server.injectPointerMove(x, y);
+            server.injectButton(button, true);
+            server.injectButton(button, false);
+        };
+        const beginDrag = async (x, y) => {
+            server.injectPointerMove(x, y);
+            await delay(50);
+            server.injectButton(1, true);
+            await delay(180); // WM must process the press and pointer grab before motion
+        };
+
+        // Click-hold-drag on empty wallpaper paints an actual rubber band,
+        // and releasing it leaves a selection only for intersected icons.
+        await beginDrag(500, 400);
+        server.injectPointerMove(560, 450);
+        await waitFor(() => { server.compose(); return rootPixel(500, 420) === main; },
+            'visible desktop rubber-band border');
+        server.injectButton(1, false);
+        await delay(100);
+        server.compose();
+        assert.notEqual(rootPixel(500, 420), main, 'rubber band remained after release');
+
+        // Drag Terminal from slot 0 to empty slot 13 (column 5, row 1).
+        await beginDrag(56, 40);
+        server.injectPointerMove(500, 150);
+        await waitFor(() => { server.compose(); return rootPixel(456, 140) === main; },
+            'desktop nearest-grid snap preview');
+        server.injectButton(1, false);
+        await waitFor(() => configValue('desktop_slots') === '13,1,2,3',
+            'persistent nearest-grid desktop placement');
+        assert.equal(configValue('desktop_pins'), 'terminal,files,sysmon,settings');
+
+        // Move the same shortcut to the end of the taskbar. This catches the
+        // existing-pin append case as well as desktop removal and the marker.
+        await beginDrag(496, 140);
+        server.injectPointerMove(330, 586);
+        await waitFor(() => { server.compose(); return barPixel(325, 10) === main; },
+            'visible taskbar insertion marker');
+        server.injectButton(1, false);
+        await waitFor(() => configValue('pins') === 'files,sysmon,settings,terminal' &&
+            configValue('desktop_pins') === 'files,sysmon,settings',
+            'desktop-to-taskbar move persistence');
+        assert.equal(configValue('desktop_slots'), '1,2,3');
+
+        // Drag Terminal from its new taskbar position to empty desktop slot
+        // 22 (column 6, row 2), removing only the taskbar copy.
+        await beginDrag(305, 586);
+        server.injectPointerMove(600, 250);
+        await waitFor(() => { server.compose(); return rootPixel(544, 230) === main; },
+            'taskbar-to-desktop snap preview');
+        server.injectButton(1, false);
+        await waitFor(() => configValue('pins') === 'files,sysmon,settings' &&
+            configValue('desktop_pins') === 'files,sysmon,settings,terminal',
+            'taskbar-to-desktop move persistence');
+        assert.equal(configValue('desktop_slots'), '1,2,3,22');
+
+        const shortcutMenu = () => server.root.children.find(w => w.width === 220 && w.mapped);
+        const chooseShortcutRow = async row => {
+            const menu = await waitFor(shortcutMenu, 'shortcut context menu');
+            click(menu.absX() + 100, menu.absY() + 13 + row * 24);
+            await waitFor(() => !menu.mapped, 'shortcut context action');
+        };
+
+        // Settings remains on the desktop when its taskbar pin is removed,
+        // and can be added back without duplicating its desktop shortcut.
+        click(265, 586, 3);
+        await waitFor(shortcutMenu, 'taskbar shortcut menu');
+        await chooseShortcutRow(3); // Remove from taskbar
+        await waitFor(() => configValue('pins') === 'files,sysmon',
+            'right-click taskbar removal');
+        assert.equal(configValue('desktop_pins'), 'files,sysmon,settings,terminal');
+
+        click(320, 40, 3); // desktop Settings, still slot 3
+        await waitFor(shortcutMenu, 'desktop shortcut menu');
+        await chooseShortcutRow(1); // Add to taskbar
+        await waitFor(() => configValue('pins') === 'files,sysmon,settings',
+            'desktop context Add to taskbar');
+        assert.equal(configValue('desktop_pins'), 'files,sysmon,settings,terminal');
+
+        // Surface-specific desktop removal must leave SysMon on the taskbar.
+        click(232, 40, 3); // desktop SysMon, slot 2
+        await waitFor(shortcutMenu, 'desktop removal menu');
+        await chooseShortcutRow(3); // Remove from desktop
+        await waitFor(() => configValue('desktop_pins') === 'files,settings,terminal',
+            'right-click desktop removal');
+        assert.equal(configValue('pins'), 'files,sysmon,settings');
+
+        // Launch a separate process through the actual Files command. Its
+        // multi-size _NET_WM_ICON changes during initialization, then the
+        // window is withdrawn and launched again to probe the reported
+        // file-manager path rather than an in-process-only approximation.
+        const findFileClient = () => {
+            for (const res of server.resources.values())
+                if (res.type === 'window' && res.mapped && res.parent && res.parent.id !== 1 &&
+                    property(server, res, 'WM_CLASS') === 'thunar' &&
+                    property(server, res, 'WM_NAME') === 'Home - File Manager') return res;
+            return null;
+        };
+        for (let cycle = 0; cycle < 12; cycle++) {
+            click(185, 586); // Files is taskbar pin 0 after the shortcut tests
+            const fileClient = await waitFor(findFileClient, `external Files launch ${cycle + 1}`);
+            await delay(140); // several live icon replacements
+            assert.equal(wm.exitCode, null, `WM exited on Files launch ${cycle + 1}: ${wmLog}`);
+            assert.equal(wm.signalCode, null, `WM signalled on Files launch ${cycle + 1}: ${wmLog}`);
+            const frame = fileClient.parent;
+            X.DestroyWindow(fileClient.id);
+            try {
+                await waitFor(() => !server.resources.has(frame.id),
+                    `external Files withdrawal ${cycle + 1}`);
+            } catch (err) {
+                console.error('Files withdrawal debug', {
+                    cycle: cycle + 1, client: fileClient.id, frame: frame.id,
+                    wmExit: wm.exitCode, wmSignal: wm.signalCode,
+                    clientMapped: fileClient.mapped, frameMapped: frame.mapped,
+                    fileWindows: [...server.resources.values()].filter(r => r.type === 'window' &&
+                        property(server, r, 'WM_CLASS') === 'thunar')
+                        .map(r => ({ id: r.id, mapped: r.mapped, parent: r.parent && r.parent.id })),
+                    handlerErrors: handlerErrors.map(x => String(x.err))
+                });
+                throw err;
+            }
+            assert.equal(wm.exitCode, null, `WM exited on Files withdrawal ${cycle + 1}: ${wmLog}`);
+            assert.equal(wm.signalCode, null, `WM signalled on Files withdrawal ${cycle + 1}: ${wmLog}`);
+            await delay(60);
+        }
+
+        // Restart with a large installed-app set so the earlier curated-
+        // launcher assertions remain small and deterministic. Unique icon
+        // names/paths force separate cache entries and repeated PNG decodes.
+        const stressApps = path.join(home, '.local/share/applications');
+        const stressIcons = path.join(home, '.local/share/icons/hicolor/24x24/apps');
+        const stressPng = fs.readFileSync(path.join(repo, 'packaging/icons/hicolor/24x24/apps/scos-files.png'));
+        for (let i = 0; i < 250; i++) {
+            const id = `stress-${String(i).padStart(3, '0')}`;
+            fs.writeFileSync(path.join(stressApps, `${id}.desktop`),
+                `[Desktop Entry]\nType=Application\nName=Stress ${String(i).padStart(3, '0')}\nExec=/bin/true\nIcon=${id}\n`);
+            fs.writeFileSync(path.join(stressIcons, `${id}.png`), stressPng);
+        }
+        wm.kill('SIGKILL');
+        await waitFor(() => wm.exitCode !== null || wm.signalCode !== null, 'WM restart for launcher stress');
+        await delay(150);
+        wm = spawn(path.join(repo, 'scoswm'), [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        wm.stdout.on('data', b => wmLog += b);
+        wm.stderr.on('data', b => wmLog += b);
+        await waitFor(() => server.root.children.some(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
+            'restarted stress WM taskbar');
+        assert.equal(wm.exitCode, null, `stress WM exited during startup: ${wmLog}`);
+
+        click(25, 586);
+        const stressLauncher = await waitFor(() => server.root.children.find(w => w.width === 300 && w.height === 308 && w.mapped),
+            'stress launcher');
+        const stressPixel = (x, y) => stressLauncher.raster.data[y * stressLauncher.width + x] & 0xffffff;
+        click(stressLauncher.absX() + 100, stressLauncher.absY() + 162); // All installed apps..., row 4
+        await waitFor(() => { server.compose(); return stressPixel(290, 54) === main; },
+            'stress All Apps selection');
+        server.injectPointerMove(stressLauncher.absX() + 150, stressLauncher.absY() + 150);
+        for (let i = 0; i < 600; i++) {
+            const button = i < 300 ? 5 : 4;
+            server.injectButton(button, true);
+            server.injectButton(button, false);
+            if (i % 25 === 24) {
+                await delay(12);
+                assert.equal(wm.exitCode, null, `WM exited during launcher scroll ${i + 1}: ${wmLog}`);
+                assert.equal(wm.signalCode, null, `WM signalled during launcher scroll ${i + 1}: ${wmLog}`);
+            }
+            if (i === 29)
+                await waitFor(() => { server.compose(); return stressPixel(290, 270) === main; },
+                    'populated launcher reached its lower scroll rows');
+        }
+        await waitFor(() => { server.compose(); return stressPixel(290, 54) === main; },
+            'launcher selection after 600 wheel events');
+        assert.equal(stressLauncher.mapped, true, 'launcher closed during prolonged scrolling');
+        assert.equal(wm.exitCode, null, `WM exited after prolonged scrolling: ${wmLog}`);
+        assert.equal(wm.signalCode, null, `WM signalled after prolonged scrolling: ${wmLog}`);
 
         assert.deepEqual(directDraws, [], `visible-window drawing bypassed backing pixmaps: ${JSON.stringify(directDraws)}`);
         assert.deepEqual(handlerErrors, [], `X server handler errors: ${handlerErrors.map(x => String(x.err)).join(', ')}`);
@@ -426,15 +638,19 @@ function property(server, win, name) {
         console.log('graphical WM: pinned-only bar, picker minimise/restore and 20 safe window-reuse cycles OK');
         console.log('graphical WM: no real client resize during animation or move OK');
         console.log('graphical terminal: real Bash startup and buffered resize/move OK');
-        console.log('graphical Settings: mouse-open persistence and live 28/32px taskbar scaling OK');
+        console.log('graphical Settings: mouse-open persistence, taskbar scaling, desktop icon sizes and grid OK');
+        console.log('graphical shortcuts: snap/drop previews, persistent bidirectional drags, independent pins and context removal OK');
+        console.log('graphical desktop: visible click-hold rubber-band selection and release OK');
+        console.log('graphical Files: 12 external launches, live multi-size client icons and safe withdrawals OK');
+        console.log('graphical launcher: 250 apps, separate PNG cache entries and 600 wheel events OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);
         console.error('Terminal log on failure:', terminalLog);
         throw err;
     } finally {
-        if (terminal && terminal.exitCode === null) terminal.kill('SIGTERM');
-        if (wm && wm.exitCode === null) wm.kill('SIGTERM');
+        if (terminal && terminal.exitCode === null && terminal.signalCode === null) terminal.kill('SIGTERM');
+        if (wm && wm.exitCode === null && wm.signalCode === null) wm.kill('SIGTERM');
         if (conn) conn.terminate();
         await delay(100);
         net.close();

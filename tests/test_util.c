@@ -59,6 +59,8 @@ int main(void)
     config_defaults(&cfg);
     CHECK(!strcmp(cfg.theme, "matrix-1") && cfg.bar_height == 40);
     CHECK(!strcmp(cfg.pins, "terminal,files,sysmon,settings"));
+    CHECK(!cfg.has_desktop_pins && cfg.desktop_pins[0] == 0);
+    CHECK(cfg.desktop_grid == 1 && cfg.desktop_icon_size == 24);
 
     snprintf(path, sizeof(path), "%s/scoswm.conf", dir);
     write_file(path,
@@ -74,7 +76,30 @@ int main(void)
     CHECK(!strcmp(cfg.terminal, "alacritty"));
     CHECK(cfg.bar_height == 48);
     CHECK(!strcmp(cfg.pins, "terminal,firefox"));
+    CHECK(!cfg.has_desktop_pins); /* legacy shared pins migrate in the WM, once */
     CHECK(config_load_file("/nonexistent/scoswm.conf", &cfg) == -1);
+
+    /* An explicitly empty desktop is independent and must not be refilled
+     * from taskbar pins when the configuration is saved and loaded again. */
+    config_defaults(&cfg);
+    snprintf(path, sizeof(path), "%s/independent.conf", dir);
+    write_file(path,
+        "pins = files,sysmon\n"
+        "desktop_pins =\n"
+        "desktop_slots =\n"
+        "desktop_grid = off\n"
+        "desktop_icon_size = 48\n");
+    CHECK(config_load_file(path, &cfg) == 5);
+    CHECK(cfg.has_desktop_pins && cfg.desktop_pins[0] == 0);
+    CHECK(!strcmp(cfg.pins, "files,sysmon"));
+    CHECK(cfg.desktop_grid == 0 && cfg.desktop_icon_size == 48);
+    snprintf(path, sizeof(path), "%s/independent-saved.conf", dir);
+    CHECK(config_save_file(path, &cfg));
+    config_defaults(&cfg);
+    CHECK(config_load_file(path, &cfg) >= 5);
+    CHECK(cfg.has_desktop_pins && cfg.desktop_pins[0] == 0);
+    CHECK(!strcmp(cfg.pins, "files,sysmon"));
+    CHECK(cfg.desktop_grid == 0 && cfg.desktop_icon_size == 48);
 
     /* custom colours override and flip the theme to "custom" */
     config_defaults(&cfg);
@@ -91,6 +116,11 @@ int main(void)
     strcpy(cfg.theme, "blue-sky");
     strcpy(cfg.terminal, "alacritty");
     strcpy(cfg.pins, "terminal,files,sysmon,settings,firefox");
+    strcpy(cfg.desktop_pins, "terminal,settings");
+    strcpy(cfg.desktop_slots, "7,2");
+    cfg.has_desktop_pins = 1;
+    cfg.desktop_grid = 0;
+    cfg.desktop_icon_size = 32;
     cfg.bar_height = 44;
     snprintf(path, sizeof(path), "%s/saved.conf", dir);
     CHECK(config_save_file(path, &cfg));
@@ -98,6 +128,9 @@ int main(void)
     CHECK(config_load_file(path, &cfg) >= 4);
     CHECK(!strcmp(cfg.theme, "blue-sky") && !strcmp(cfg.terminal, "alacritty"));
     CHECK(cfg.bar_height == 44 && strstr(cfg.pins, "sysmon") != NULL);
+    CHECK(cfg.has_desktop_pins && !strcmp(cfg.desktop_pins, "terminal,settings"));
+    CHECK(!strcmp(cfg.desktop_slots, "7,2"));
+    CHECK(cfg.desktop_grid == 0 && cfg.desktop_icon_size == 32);
 
     /* Linux /proc parsers used by SysMon */
     struct linux_meminfo mem;
@@ -199,6 +232,25 @@ int main(void)
         CHECK(img.pixels[15] == 128);
         CHECK(rgba_image_scale_fit(&img, 1, 1) && img.w == 1 && img.h == 1);
         rgba_image_free(&img);
+
+        /* Reject impossible PNG depth/colour combinations before row-stride
+         * arithmetic. This is a malformed-icon regression, not a claim that
+         * every valid PNG variant is supported by the built-in decoder. */
+        unsigned char bad_png[sizeof(png_bytes)];
+        memcpy(bad_png, png_bytes, sizeof(bad_png));
+        bad_png[24] = 4;  /* IHDR bit depth: invalid for truecolour RGB */
+        bad_png[25] = 2;
+        char bad_path[1024];
+        snprintf(bad_path, sizeof(bad_path), "%.1000s/bad.png", app_dir);
+        FILE *bad = fopen(bad_path, "wb"); CHECK(bad != NULL);
+        if (bad) { fwrite(bad_png, 1, sizeof(bad_png), bad); fclose(bad); }
+        CHECK(!rgba_image_load(bad_path, &img));
+        memcpy(bad_png, png_bytes, sizeof(bad_png));
+        bad_png[24] = 16; /* indexed colour cannot have 16-bit samples */
+        bad_png[25] = 3;
+        bad = fopen(bad_path, "wb"); CHECK(bad != NULL);
+        if (bad) { fwrite(bad_png, 1, sizeof(bad_png), bad); fclose(bad); }
+        CHECK(!rgba_image_load(bad_path, &img));
 
         char xpm_path[1024];
         snprintf(xpm_path, sizeof(xpm_path), "%.1000s/testapp.xpm", app_dir);

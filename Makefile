@@ -4,7 +4,7 @@
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.3"'
+CPPFLAGS += -DVERSION='"0.5.4"'
 LDLIBS    = -lX11 -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl
 PREFIX   ?= /usr
@@ -25,7 +25,7 @@ scos-terminal: $(TERM_SRC) src/term_emulation.h src/util.h
 # If Xvfb is installed, the WM integration test also boots the WM and a
 # real X client. tests/run_graphical.sh additionally uses node-x11 when
 # SCOSWM_NODE_X11 (or an installed x11 module with lib/xserver) is present.
-check: scoswm scos-terminal test_util test_terminal test_pty
+check: scoswm scos-terminal test_util test_terminal test_pty test_file_client
 	./test_util
 	./test_terminal
 	./test_pty
@@ -41,6 +41,9 @@ test_terminal: tests/test_terminal.c src/term_emulation.c src/term_emulation.h
 
 test_pty: tests/test_pty.c src/term_emulation.c src/term_emulation.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Isrc -o $@ tests/test_pty.c src/term_emulation.c $(LDFLAGS) -lutil
+
+test_file_client: tests/file_manager_client.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -o $@ tests/file_manager_client.c $(LDFLAGS) -lX11
 
 install: scoswm scos-terminal
 	install -Dm755 scoswm $(DESTDIR)$(PREFIX)/bin/scoswm
@@ -62,6 +65,6 @@ install: scoswm scos-terminal
 	install -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/scoswm/README.md
 
 clean:
-	rm -f scoswm scos-terminal test_util test_terminal test_pty
+	rm -f scoswm scos-terminal test_util test_terminal test_pty test_file_client
 
 .PHONY: all check install clean

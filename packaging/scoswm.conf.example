@@ -27,13 +27,20 @@ files =
 # terminal prefers an ISO10646 (Unicode) fixed font from xfonts-base.
 # font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso10646-1
 
-# Taskbar pins + desktop icons ("Home" apps). The retained SCos core
-# apps are terminal, files, sysmon and settings. You may also use
-# .desktop ids or app names from the standard applications
-# directories, or a bare command from your own config. The easiest way
-# to edit this is right-clicking an app in the launcher to pin/unpin
-# it; pinned apps show their real Icon= image.
+# Independent taskbar and desktop shortcuts. Use the retained SCos core
+# names (terminal, files, sysmon, settings), .desktop ids/app names, or a
+# bare command. Right-click any launcher item or existing shortcut for
+# Add/Move/Remove actions; drag between surfaces to move and reorder.
 pins = terminal, files, sysmon, settings
+desktop_pins = terminal, files, sysmon, settings
+
+# Grid slots are parallel to desktop_pins and are maintained automatically
+# when you drag icons. At 800x600, slots 0..7 are the first row.
+desktop_slots = 0,1,2,3
+
+# Desktop presentation: 24, 32 or 48 px icon images; wallpaper grid on/off.
+desktop_icon_size = 24
+desktop_grid = 1
 
 # Taskbar height (SCos used 40).
 bar_height = 40

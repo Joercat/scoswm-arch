@@ -64,6 +64,8 @@ void config_defaults(struct scos_config *cfg)
     memset(cfg, 0, sizeof(*cfg));
     strcpy(cfg->theme, "matrix-1");
     strcpy(cfg->pins, "terminal,files,sysmon,settings");
+    cfg->desktop_grid = 1;
+    cfg->desktop_icon_size = 24;
     cfg->bar_height = 40;
 }
 
@@ -102,6 +104,20 @@ int config_load_file(const char *path, struct scos_config *cfg)
         else if (!strcmp(key, "files")) set_str(cfg->files, sizeof(cfg->files), val);
         else if (!strcmp(key, "font")) set_str(cfg->font, sizeof(cfg->font), val);
         else if (!strcmp(key, "pins")) set_str(cfg->pins, sizeof(cfg->pins), val);
+        else if (!strcmp(key, "desktop_pins")) {
+            set_str(cfg->desktop_pins, sizeof(cfg->desktop_pins), val);
+            cfg->has_desktop_pins = 1;
+        }
+        else if (!strcmp(key, "desktop_slots")) set_str(cfg->desktop_slots, sizeof(cfg->desktop_slots), val);
+        else if (!strcmp(key, "desktop_grid")) {
+            if (!strcasecmp(val, "0") || !strcasecmp(val, "false") || !strcasecmp(val, "off")) cfg->desktop_grid = 0;
+            else if (!strcasecmp(val, "1") || !strcasecmp(val, "true") || !strcasecmp(val, "on")) cfg->desktop_grid = 1;
+            else done = 0;
+        }
+        else if (!strcmp(key, "desktop_icon_size")) {
+            int v = atoi(val);
+            if (v == 24 || v == 32 || v == 48) cfg->desktop_icon_size = v; else done = 0;
+        }
         else if (!strcmp(key, "bar_height")) {
             int v = atoi(val);
             if (v >= 28 && v <= 96) cfg->bar_height = v; else done = 0;
@@ -139,6 +155,10 @@ int config_save_file(const char *path, const struct scos_config *cfg)
     fprintf(f, "files = %s\n", cfg->files);
     fprintf(f, "font = %s\n", cfg->font);
     fprintf(f, "pins = %s\n", cfg->pins);
+    fprintf(f, "desktop_pins = %s\n", cfg->has_desktop_pins ? cfg->desktop_pins : cfg->pins);
+    fprintf(f, "desktop_slots = %s\n", cfg->desktop_slots);
+    fprintf(f, "desktop_grid = %d\n", cfg->desktop_grid ? 1 : 0);
+    fprintf(f, "desktop_icon_size = %d\n", cfg->desktop_icon_size);
     fprintf(f, "bar_height = %d\n", cfg->bar_height);
     int ok = fclose(f) == 0;
     return ok;
@@ -448,7 +468,15 @@ static int png_load(FILE *f, struct rgba_image *out)
 
     int channels = color_type == 0 ? 1 : color_type == 2 ? 3 : color_type == 3 ? 1 :
                    color_type == 4 ? 2 : color_type == 6 ? 4 : 0;
-    if (!channels) { free(idat); return 0; }
+    int valid_depth = color_type == 0 || color_type == 3
+        ? (bit_depth == 1 || bit_depth == 2 || bit_depth == 4 || bit_depth == 8 || bit_depth == 16)
+        : (bit_depth == 8 || bit_depth == 16);
+    /* Colour types 2/4/6 do not permit sub-byte samples (and indexed
+     * colour does not permit 16-bit). Reject invalid depths before shift,
+     * stride and division calculations, rather than crashing on a bad or
+     * deliberately malformed application icon. */
+    if (color_type == 3 && bit_depth == 16) valid_depth = 0;
+    if (!channels || !valid_depth) { free(idat); return 0; }
     int bits_per_pixel = channels * bit_depth;
     size_t row_bytes = ((size_t)w * bits_per_pixel + 7) / 8;
     uint64_t raw_expected = (uint64_t)(row_bytes + 1) * h;
@@ -663,22 +691,34 @@ static int pixbuf_image_load(const char *path, struct rgba_image *out)
     typedef int (*get_int_fn)(void *);
     typedef unsigned char *(*get_pixels_fn)(void *);
     typedef void (*unref_fn)(void *);
-    void *gdk = dlopen("libgdk_pixbuf-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
-    if (!gdk) return 0;
-    void *gobj = dlopen("libgobject-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
-    new_scaled_fn new_scaled = (new_scaled_fn)dlsym(gdk, "gdk_pixbuf_new_from_file_at_scale");
-    get_int_fn get_width = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_width");
-    get_int_fn get_height = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_height");
-    get_int_fn get_channels = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_n_channels");
-    get_int_fn get_rowstride = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_rowstride");
-    get_pixels_fn get_pixels = (get_pixels_fn)dlsym(gdk, "gdk_pixbuf_get_pixels");
-    unref_fn unref = gobj ? (unref_fn)dlsym(gobj, "g_object_unref") : NULL;
-    if (!new_scaled || !get_width || !get_height || !get_channels ||
-        !get_rowstride || !get_pixels || !unref) {
-        if (gobj) dlclose(gobj);
-        dlclose(gdk);
-        return 0;
+    /* gdk-pixbuf and its image loaders keep process-global type/module
+     * state. Repeating dlopen/dlclose for every icon could leave loader
+     * callbacks pointing into an unloaded library after enough lazy icon
+     * loads. Initialise once and keep the small library handles for the
+     * WM's lifetime; pixbufs themselves are still released every time. */
+    static int attempted, ready;
+    static new_scaled_fn new_scaled;
+    static get_int_fn get_width, get_height, get_channels, get_rowstride;
+    static get_pixels_fn get_pixels;
+    static unref_fn unref;
+    if (!attempted) {
+        attempted = 1;
+        void *gdk = dlopen("libgdk_pixbuf-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+        void *gobj = dlopen("libgobject-2.0.so.0", RTLD_NOW | RTLD_LOCAL);
+        if (gdk && gobj) {
+            new_scaled = (new_scaled_fn)dlsym(gdk, "gdk_pixbuf_new_from_file_at_scale");
+            get_width = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_width");
+            get_height = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_height");
+            get_channels = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_n_channels");
+            get_rowstride = (get_int_fn)dlsym(gdk, "gdk_pixbuf_get_rowstride");
+            get_pixels = (get_pixels_fn)dlsym(gdk, "gdk_pixbuf_get_pixels");
+            unref = (unref_fn)dlsym(gobj, "g_object_unref");
+            ready = new_scaled && get_width && get_height && get_channels &&
+                    get_rowstride && get_pixels && unref;
+        }
+        /* Deliberately no dlclose: loader modules may retain these symbols. */
     }
+    if (!ready) return 0;
     void *pixbuf = new_scaled(path, 256, 256, 1, NULL);
     int ok = 0;
     if (pixbuf) {
@@ -703,8 +743,6 @@ static int pixbuf_image_load(const char *path, struct rgba_image *out)
         }
         unref(pixbuf);
     }
-    dlclose(gobj);
-    dlclose(gdk);
     return ok;
 }
 

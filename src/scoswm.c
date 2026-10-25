@@ -52,7 +52,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.5.3"
+#define VERSION "0.5.4"
 #endif
 
 #define TITLE_H 26
@@ -60,6 +60,7 @@
 #define TOP_H (TITLE_H + 1)          /* titlebar + top border */
 #define DESK_COL_W 88
 #define DESK_ROW_H 96
+#define DESK_EDGE_GAP 16          /* keep the right rule off physical overscan */
 #define TOOL_W 540
 #define TOOL_H 390
 
@@ -138,9 +139,13 @@ static struct desktop_app apps[1024];
 static int napps;
 
 enum core_action { CORE_NONE, CORE_TERMINAL, CORE_FILES, CORE_SYSMON, CORE_SETTINGS };
-struct pin { char label[64]; char glyph[4]; char icon[160]; char command[512]; char match[96]; int action; };
-static struct pin pins[32];
+enum { SHORTCUT_LAUNCHER, SHORTCUT_BAR, SHORTCUT_DESKTOP };
+#define MAX_PINS 32
+struct pin { char label[64]; char glyph[4]; char icon[160]; char command[512]; char match[96]; int action; int slot; };
+static struct pin pins[MAX_PINS];       /* quick launch / taskbar */
 static int npins;
+static struct pin desk_pins[MAX_PINS];  /* independent Home/desktop shortcuts */
+static int ndesk_pins;
 
 static unsigned long desk_sel_mask;
 static int desk_hover = -1;
@@ -427,8 +432,10 @@ static void send_proto(struct client *c, Atom a)
 
 /* forward declarations for the UI half */
 static void draw_frame(struct client *c);
+static void draw_desktop(void);
 static void draw_bar(void);
 static void bar_layout(void);
+static int bar_power_x(void);
 static void animate_minimize(struct client *c);
 static void animate_restore(struct client *c);
 static struct xicon *xicon_get(const char *spec, int size);
@@ -451,6 +458,9 @@ static int tool_key(XKeyEvent *e);
 static int tool_button(XButtonEvent *e);
 static void spawn_files_home(void);
 static void menu_open(int kind, int x, int y, Window target);
+static int desktop_cols(void);
+static int desktop_slot_count(void);
+static void desktop_normalize_slots(void);
 
 static void set_wm_state(struct client *c, int state)
 {
@@ -576,13 +586,15 @@ static void close_client(struct client *c)
 }
 
 static struct {
-    int kind;               /* 0 none 1 move 2 resize 3 desktop-band */
+    int kind;               /* 0 none 1 move 2 resize 3 band 4 shortcut */
     struct client *c;
     int start_x, start_y;   /* pointer at grab */
-    int ox, oy, ow, oh;     /* frame/client geometry at grab */
+    int ox, oy, ow, oh;     /* frame geometry, or icon grab offset for shortcuts */
     int edges;              /* resize edges: 1 left 2 right 4 top 8 bottom */
     int moved;
     int band_x, band_y, band_drawn;
+    int pin_index, pin_source;
+    int current_x, current_y, target_slot, target_order;
 } drag;
 
 static void grab_drag_pointer(struct client *c, Time t)
@@ -818,52 +830,65 @@ static void run_core_action(int action);
 static void launch_cmd_for(const struct desktop_app *a, char *out, int cap);
 static void build_pins(void);
 
-/* Desktop/taskbar pins are deliberately just the existing "pins" list:
- * pinning an installed app adds its .desktop id there, which makes it a
- * first-class desktop icon (with that app's real icon) and taskbar pin,
- * and persists across restarts in the normal config file. */
-static int app_is_pinned(int app_idx)
+/* Taskbar and desktop shortcuts share an identity, not a presence or
+ * position. Legacy configs are copied to both once; every later change is
+ * saved independently. */
+static int pin_equal(const struct pin *a, const struct pin *b)
+{
+    if (!a || !b || a->action != b->action) return 0;
+    if (a->action != CORE_NONE) return 1;
+    if (a->match[0] && b->match[0]) return !strcasecmp(a->match, b->match);
+    return !strcmp(a->command, b->command);
+}
+
+static int pin_list_find(const struct pin *list, int count, const struct pin *needle)
+{
+    for (int i = 0; i < count; i++) if (pin_equal(&list[i], needle)) return i;
+    return -1;
+}
+
+static int app_pin_mask(int app_idx)
 {
     if (app_idx < 0 || app_idx >= napps) return 0;
+    int mask = 0;
     for (int i = 0; i < npins; i++)
-        if (pins[i].action == CORE_NONE && !strcasecmp(pins[i].match, apps[app_idx].id)) return 1;
-    return 0;
+        if (pins[i].action == CORE_NONE && !strcasecmp(pins[i].match, apps[app_idx].id)) mask |= 1;
+    for (int i = 0; i < ndesk_pins; i++)
+        if (desk_pins[i].action == CORE_NONE && !strcasecmp(desk_pins[i].match, apps[app_idx].id)) mask |= 2;
+    return mask;
+}
+
+static const char *pin_token(const struct pin *p)
+{
+    return p->action == CORE_TERMINAL ? "terminal" :
+           p->action == CORE_FILES ? "files" :
+           p->action == CORE_SYSMON ? "sysmon" :
+           p->action == CORE_SETTINGS ? "settings" :
+           p->match[0] ? p->match : p->command;
+}
+
+static void append_config_token(char *out, size_t cap, int *first, const char *token)
+{
+    if (!out || !first || !token || !*token) return;
+    size_t used = strlen(out);
+    if (!*first && used + 1 < cap) { out[used++] = ','; out[used] = 0; }
+    strncat(out, token, cap - strlen(out) - 1);
+    *first = 0;
 }
 
 static void pins_sync_config(void)
 {
-    cfg.pins[0] = 0;
-    for (int i = 0; i < npins; i++) {
-        const char *tok = pins[i].action == CORE_TERMINAL ? "terminal" :
-                          pins[i].action == CORE_FILES ? "files" :
-                          pins[i].action == CORE_SYSMON ? "sysmon" :
-                          pins[i].action == CORE_SETTINGS ? "settings" :
-                          pins[i].match[0] ? pins[i].match : pins[i].command;
-        if (i) strncat(cfg.pins, ",", sizeof(cfg.pins) - strlen(cfg.pins) - 1);
-        strncat(cfg.pins, tok, sizeof(cfg.pins) - strlen(cfg.pins) - 1);
+    cfg.pins[0] = 0; cfg.desktop_pins[0] = 0; cfg.desktop_slots[0] = 0;
+    int first = 1;
+    for (int i = 0; i < npins; i++) append_config_token(cfg.pins, sizeof(cfg.pins), &first, pin_token(&pins[i]));
+    first = 1;
+    for (int i = 0; i < ndesk_pins; i++) {
+        append_config_token(cfg.desktop_pins, sizeof(cfg.desktop_pins), &first, pin_token(&desk_pins[i]));
+        char slot[24];
+        snprintf(slot, sizeof(slot), "%s%d", i ? "," : "", desk_pins[i].slot);
+        strncat(cfg.desktop_slots, slot, sizeof(cfg.desktop_slots) - strlen(cfg.desktop_slots) - 1);
     }
-}
-
-static void toggle_app_pin(int app_idx)
-{
-    if (app_idx < 0 || app_idx >= napps) return;
-    if (app_is_pinned(app_idx)) {
-        for (int i = 0; i < npins; i++) {
-            if (pins[i].action == CORE_NONE && !strcasecmp(pins[i].match, apps[app_idx].id)) {
-                memmove(&pins[i], &pins[i + 1], (npins - i - 1) * sizeof(pins[0]));
-                npins--;
-                break;
-            }
-        }
-        pins_sync_config();
-    } else {
-        if (cfg.pins[0]) strncat(cfg.pins, ",", sizeof(cfg.pins) - strlen(cfg.pins) - 1);
-        strncat(cfg.pins, apps[app_idx].id, sizeof(cfg.pins) - strlen(cfg.pins) - 1);
-    }
-    build_pins();
-    desk_sel_mask = 0;
-    save_settings("Desktop pins");
-    redraw_everything();
+    cfg.has_desktop_pins = 1;
 }
 
 static void launch_add(const char *name, const char *glyph, const char *icon, const char *command, int action, int app_idx)
@@ -897,6 +922,15 @@ static int launch_rebuild(void)
             int app_idx = -1;
             for (int j = 0; j < napps; j++) if (!strcasecmp(apps[j].id, pins[i].match)) app_idx = j;
             launch_add(pins[i].label, pins[i].glyph, pins[i].icon, pins[i].command, CORE_NONE, app_idx);
+        }
+    }
+    for (int i = 0; i < ndesk_pins; i++) {
+        if (desk_pins[i].action != CORE_NONE) continue;
+        if (ci_contains(desk_pins[i].label, launch_q)) {
+            int app_idx = -1;
+            for (int j = 0; j < napps; j++) if (!strcasecmp(apps[j].id, desk_pins[i].match)) app_idx = j;
+            launch_add(desk_pins[i].label, desk_pins[i].glyph, desk_pins[i].icon,
+                       desk_pins[i].command, CORE_NONE, app_idx);
         }
     }
 
@@ -934,15 +968,202 @@ static void launch_exec_item(const struct launch_item *it)
     else spawn(it->command);
 }
 
-static void launch_pin(int i)
+static void launch_pin_value(const struct pin *p)
 {
-    if (i < 0 || i >= npins) return;
-    if (pins[i].action != CORE_NONE) { run_core_action(pins[i].action); return; }
+    if (!p) return;
+    if (p->action != CORE_NONE) { run_core_action(p->action); return; }
     struct client *match = NULL;
     for (int k = 0; k < nclients; k++)
-        if (pins[i].match[0] && strstr(clients[k]->wclass, pins[i].match)) match = clients[k];
+        if (p->match[0] && strstr(clients[k]->wclass, p->match)) match = clients[k];
     if (match) activate(match, 1);
-    else spawn(pins[i].command);
+    else spawn(p->command);
+}
+
+static void launch_desktop_pin(int i)
+{
+    if (i >= 0 && i < ndesk_pins) launch_pin_value(&desk_pins[i]);
+}
+
+static int taskbar_insert(const struct pin *p, int order)
+{
+    int existing = pin_list_find(pins, npins, p);
+    if (existing >= 0) {
+        if (order < 0 || order > npins) order = npins;
+        if (order > existing) order--;
+        if (order < 0) order = 0;
+        if (order > npins - 1) order = npins - 1;
+        if (order != existing) {
+            struct pin copy = pins[existing];
+            memmove(&pins[existing], &pins[existing + 1], (npins - existing - 1) * sizeof(pins[0]));
+            memmove(&pins[order + 1], &pins[order], (npins - order - 1) * sizeof(pins[0]));
+            pins[order] = copy;
+        }
+        return order;
+    }
+    if (npins >= MAX_PINS) return -1;
+    if (order < 0 || order > npins) order = npins;
+    memmove(&pins[order + 1], &pins[order], (npins - order) * sizeof(pins[0]));
+    pins[order] = *p; pins[order].slot = -1; npins++;
+    return order;
+}
+
+static void taskbar_remove(int index)
+{
+    if (index < 0 || index >= npins) return;
+    memmove(&pins[index], &pins[index + 1], (npins - index - 1) * sizeof(pins[0]));
+    npins--;
+}
+
+static int desktop_slot_owner(int slot, int ignore)
+{
+    for (int i = 0; i < ndesk_pins; i++)
+        if (i != ignore && desk_pins[i].slot == slot) return i;
+    return -1;
+}
+
+static int desktop_free_slot(int preferred, int ignore)
+{
+    int total = desktop_slot_count(), cols = desktop_cols();
+    if (total <= 0) return -1;
+    if (preferred < 0 || preferred >= total) preferred = 0;
+    int best = -1, best_distance = 0x7fffffff;
+    int pc = preferred % cols, pr = preferred / cols;
+    for (int slot = 0; slot < total; slot++) {
+        if (desktop_slot_owner(slot, ignore) >= 0) continue;
+        int dc = slot % cols - pc, dr = slot / cols - pr;
+        int distance = dc * dc + dr * dr;
+        if (distance < best_distance) { best = slot; best_distance = distance; }
+    }
+    return best;
+}
+
+static int desktop_place(const struct pin *p, int preferred)
+{
+    int index = pin_list_find(desk_pins, ndesk_pins, p);
+    if (index < 0) {
+        if (ndesk_pins >= MAX_PINS) return -1;
+        index = ndesk_pins++;
+        desk_pins[index] = *p;
+    }
+    int slot = desktop_free_slot(preferred, index);
+    if (slot < 0) {
+        if (index == ndesk_pins - 1 && pin_list_find(desk_pins, ndesk_pins - 1, p) < 0) ndesk_pins--;
+        return -1;
+    }
+    desk_pins[index].slot = slot;
+    return index;
+}
+
+static void desktop_remove(int index)
+{
+    if (index < 0 || index >= ndesk_pins) return;
+    memmove(&desk_pins[index], &desk_pins[index + 1], (ndesk_pins - index - 1) * sizeof(desk_pins[0]));
+    ndesk_pins--;
+    desk_sel_mask = 0; desk_hover = -1;
+}
+
+static void desktop_move_slot(int index, int target)
+{
+    if (index < 0 || index >= ndesk_pins || target < 0 || target >= desktop_slot_count()) return;
+    int owner = desktop_slot_owner(target, index);
+    int old = desk_pins[index].slot;
+    if (owner >= 0) desk_pins[owner].slot = old;
+    desk_pins[index].slot = target;
+}
+
+static void shortcuts_saved(const char *what)
+{
+    pins_sync_config();
+    save_settings(what);
+    redraw_everything();
+}
+
+static int shortcut_over_taskbar(int x, int y)
+{
+    return y >= screen_h - bar_h && y < screen_h && x >= 168 && x < bar_power_x() - 8;
+}
+
+static int shortcut_bar_order(int x)
+{
+    int order = (x - 168 + 20) / 40; /* 34 px pin + 6 px gap */
+    if (order < 0) order = 0;
+    if (order > npins) order = npins;
+    return order;
+}
+
+static void shortcut_drag_begin(int source, int index, const XButtonEvent *e, int icon_x, int icon_y)
+{
+    drag.kind = 4; drag.c = NULL;
+    drag.pin_source = source; drag.pin_index = index;
+    drag.start_x = drag.current_x = e->x_root;
+    drag.start_y = drag.current_y = e->y_root;
+    drag.ox = source == SHORTCUT_DESKTOP ? e->x_root - icon_x : 40;
+    drag.oy = source == SHORTCUT_DESKTOP ? e->y_root - icon_y : 44;
+    drag.moved = 0; drag.target_slot = drag.target_order = -1;
+    XGrabPointer(dpy, source == SHORTCUT_BAR ? bar_win : root, False,
+                 PointerMotionMask | ButtonReleaseMask, GrabModeAsync, GrabModeAsync,
+                 None, None, e->time);
+}
+
+static void shortcut_drag_motion(const XMotionEvent *e)
+{
+    int old_moved = drag.moved, old_slot = drag.target_slot, old_order = drag.target_order;
+    drag.current_x = e->x_root; drag.current_y = e->y_root;
+    if (!drag.moved && (abs(e->x_root - drag.start_x) > 5 || abs(e->y_root - drag.start_y) > 5))
+        drag.moved = 1;
+    drag.target_slot = drag.target_order = -1;
+    if (drag.moved && shortcut_over_taskbar(e->x_root, e->y_root)) {
+        drag.target_order = shortcut_bar_order(e->x_root);
+    } else if (drag.moved && e->y_root >= 0 && e->y_root < screen_h - bar_h) {
+        int cols = desktop_cols(), total = desktop_slot_count();
+        int rows = total / cols; if (rows < 1) rows = 1;
+        int top_x = e->x_root - drag.ox, top_y = e->y_root - drag.oy;
+        int col = (top_x - 16 + DESK_COL_W / 2) / DESK_COL_W;
+        int row = (top_y - 16 + DESK_ROW_H / 2) / DESK_ROW_H;
+        if (col < 0) col = 0;
+        if (col >= cols) col = cols - 1;
+        if (row < 0) row = 0;
+        if (row >= rows) row = rows - 1;
+        drag.target_slot = row * cols + col;
+    }
+    if (old_moved != drag.moved || old_slot != drag.target_slot || old_order != drag.target_order) {
+        draw_desktop(); draw_bar();
+    }
+}
+
+static void shortcut_drag_finish(void)
+{
+    int source = drag.pin_source, index = drag.pin_index, moved = drag.moved;
+    int target_slot = drag.target_slot, target_order = drag.target_order;
+    struct pin p;
+    if (source == SHORTCUT_BAR && index >= 0 && index < npins) p = pins[index];
+    else if (source == SHORTCUT_DESKTOP && index >= 0 && index < ndesk_pins) p = desk_pins[index];
+    else { drag.kind = 0; return; }
+    drag.kind = 0; drag.c = NULL;
+    XUngrabPointer(dpy, CurrentTime);
+    bar_press = -1;
+    if (!moved) {
+        if (source == SHORTCUT_BAR) {
+            bar_flash_pin = index; bar_flash_until = time(NULL) + 2;
+            draw_bar(); launch_pin_value(&p); draw_bar();
+        } else draw_desktop();
+        return;
+    }
+    int changed = 0;
+    if (target_order >= 0) {
+        if (source == SHORTCUT_BAR) changed = taskbar_insert(&p, target_order) >= 0;
+        else if (taskbar_insert(&p, target_order) >= 0) {
+            desktop_remove(index); changed = 1;
+        }
+    } else if (target_slot >= 0) {
+        if (source == SHORTCUT_DESKTOP) {
+            desktop_move_slot(index, target_slot); changed = 1;
+        } else if (desktop_place(&p, target_slot) >= 0) {
+            taskbar_remove(index); changed = 1;
+        }
+    }
+    if (changed) shortcuts_saved("Shortcut layout");
+    else { draw_desktop(); draw_bar(); }
 }
 
 static void run_core_action(int action)
@@ -957,10 +1178,14 @@ static void run_core_action(int action)
 }
 
 /* ---------------------------------------------------------------- menus */
-enum { MENU_NONE, MENU_POWER, MENU_DESKTOP, MENU_TITLE, MENU_PICKER = 98, MENU_MESSAGE = 99 };
+enum { MENU_NONE, MENU_POWER, MENU_DESKTOP, MENU_TITLE, MENU_SHORTCUT, MENU_PICKER = 98, MENU_MESSAGE = 99 };
+enum { SC_LAUNCH, SC_ADD_BAR, SC_ADD_DESK, SC_MOVE_BAR, SC_MOVE_DESK, SC_REMOVE_BAR, SC_REMOVE_DESK };
 static int menu_kind, menu_n;
 static int menu_hover = -1;
 static char menu_labels[8][64];
+static int menu_actions[8];
+static struct pin menu_pin;
+static int menu_pin_source;
 static Window menu_target;           /* title menu: the client acted on */
 static Window menu_item_targets[8];  /* stable window IDs for picker rows */
 static int menu_bar_release;         /* ignore release from the opening click */
@@ -1112,6 +1337,14 @@ static void draw_frame(struct client *c)
  * mask, and copied by the X server thereafter. Desktop icons are at
  * most 24 px, taskbar pins 20 px and Windows-picker icons 16 px: the
  * normal freedesktop sizes, never enlarged. */
+static void xicon_release_images(struct xicon *xi)
+{
+    if (!xi) return;
+    if (xi->pix) XFreePixmap(dpy, xi->pix);
+    if (xi->mask) XFreePixmap(dpy, xi->mask);
+    xi->pix = xi->mask = None;
+}
+
 static int xicon_fill(struct xicon *xi, struct rgba_image *img)
 {
     if (!img || !img->pixels) return 0;
@@ -1119,13 +1352,13 @@ static int xicon_fill(struct xicon *xi, struct rgba_image *img)
     xi->w = img->w; xi->h = img->h;
     xi->pix = XCreatePixmap(dpy, root, xi->w, xi->h, DefaultDepth(dpy, scr_no));
     xi->mask = XCreatePixmap(dpy, root, xi->w, xi->h, 1);
-    if (!xi->pix || !xi->mask) return 0;
+    if (!xi->pix || !xi->mask) { xicon_release_images(xi); return 0; }
 
     XImage *im = XCreateImage(dpy, DefaultVisual(dpy, scr_no), DefaultDepth(dpy, scr_no),
                               ZPixmap, 0, NULL, xi->w, xi->h, 32, 0);
-    if (!im) return 0;
+    if (!im) { xicon_release_images(xi); return 0; }
     im->data = malloc((size_t)im->bytes_per_line * xi->h);
-    if (!im->data) { XFree(im); return 0; }
+    if (!im->data) { XFree(im); xicon_release_images(xi); return 0; }
     XInitImage(im);
     for (int y = 0; y < xi->h; y++)
         for (int x = 0; x < xi->w; x++) {
@@ -1189,8 +1422,7 @@ static int xicon_drawn(struct xicon *xi) { return xi && !xi->failed && xi->pix !
 static void xicon_destroy_owned(struct xicon *xi)
 {
     if (!xi || !xi->owned) return;
-    if (xi->pix) XFreePixmap(dpy, xi->pix);
-    if (xi->mask) XFreePixmap(dpy, xi->mask);
+    xicon_release_images(xi);
     free(xi);
 }
 
@@ -1242,6 +1474,7 @@ static struct xicon *client_net_icon(struct client *c)
     if (XGetWindowProperty(dpy, c->win, atoms[A_NET_WM_ICON], 0, 1 << 18, False,
                            XA_CARDINAL, &type, &fmt, &n, &after, &data) != Success || !data)
         return NULL;
+    if (fmt != 32 || type != XA_CARDINAL) { XFree(data); return NULL; }
     unsigned long *cards = (unsigned long *)data;
     unsigned long best_off = 0, best_w = 0, best_h = 0, best_area = 0;
     int have = 0;
@@ -1275,7 +1508,7 @@ static struct xicon *client_net_icon(struct client *c)
     if (!xi) { rgba_image_free(&img); return NULL; }
     xi->size = wanted; xi->owned = 1;
     snprintf(xi->key, sizeof(xi->key), "client:0x%lx", c->win);
-    if (!xicon_fill(xi, &img)) { free(xi); xi = NULL; }
+    if (!xicon_fill(xi, &img)) { xicon_destroy_owned(xi); xi = NULL; }
     rgba_image_free(&img);
     return xi;
 }
@@ -1294,8 +1527,10 @@ static struct xicon *client_load_icon(struct client *c)
 /* ---------------------------------------------------------------- desktop */
 static void icon_rect(int i, int *x, int *y)
 {
-    *x = 16 + (i % 8) * DESK_COL_W;
-    *y = 16 + (i / 8) * DESK_ROW_H;
+    int slot = i >= 0 && i < ndesk_pins && desk_pins[i].slot >= 0 ? desk_pins[i].slot : i;
+    int cols = desktop_cols();
+    *x = 16 + (slot % cols) * DESK_COL_W;
+    *y = 16 + (slot / cols) * DESK_ROW_H;
 }
 
 static void paint_desktop(Drawable d)
@@ -1311,17 +1546,24 @@ static void paint_desktop(Drawable d)
         XSetForeground(dpy, gc, alloc_rgb(rgb));
         XFillRectangle(dpy, d, gc, 0, y, screen_w, 1);
     }
-    XSetForeground(dpy, gc, PX.grid);
-    for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
-    for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
-    /* Frame the usable desktop explicitly. The right rule is two pixels
-     * wide: a single rule in the final physical column was still invisible
-     * on the user's display, so keep an inner column visible as well. */
-    rect(d, 0, 0, screen_w, screen_h - bar_h, PX.main);
-    if (screen_w > 1) fill(d, screen_w - 2, 0, 2, screen_h - bar_h, PX.main);
+    if (cfg.desktop_grid) {
+        XSetForeground(dpy, gc, PX.grid);
+        for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
+        for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
+    }
+    /* Do not put the right rule in physical overscan. Two previous edge
+     * fixes were still invisible on the user's display, so place a clear
+     * two-pixel rule 16 px inside the desktop, aligned with the enclosing
+     * rectangle rather than the physical screen edge. */
+    int desktop_h = screen_h - bar_h;
+    int right_rule = screen_w > DESK_EDGE_GAP + 3 ? screen_w - DESK_EDGE_GAP - 1 : screen_w - 2;
+    if (right_rule < 1) right_rule = 1;
+    rect(d, 0, 0, right_rule + 1, desktop_h, PX.main);
+    fill(d, right_rule, 0, 2, desktop_h, PX.main);
 
-    /* desktop icons on the SCos 88x96 snap grid */
-    for (int i = 0; i < npins; i++) {
+    /* Independent desktop shortcuts on a persistent snap grid. */
+    int icon_size = cfg.desktop_icon_size;
+    for (int i = 0; i < ndesk_pins; i++) {
         int x, y; icon_rect(i, &x, &y);
         if (desk_sel_mask & (1ul << i)) {
             fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 30)));
@@ -1330,21 +1572,39 @@ static void paint_desktop(Drawable d)
             fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 16)));
             rect(d, x, y, 80, 88, PX.title_off);
         }
-        /* proper freedesktop image at the normal 24x24 SCos size;
-         * the framed letter glyph remains only as a fallback */
-        int gx = x + 28, gy = y + 8;
-        struct xicon *xi = xicon_get(pins[i].icon, 24);
+        int gx = x + (80 - icon_size) / 2, gy = y + 8;
+        struct xicon *xi = xicon_get(desk_pins[i].icon, icon_size);
         if (xicon_drawn(xi)) {
-            draw_xicon(d, xi, gx + (24 - xi->w) / 2, gy + (24 - xi->h) / 2);
+            draw_xicon(d, xi, gx + (icon_size - xi->w) / 2, gy + (icon_size - xi->h) / 2);
         } else {
-            rect(d, gx, gy, 24, 24, PX.main);
-            int gw = text_w(pins[i].glyph);
-            text_out(d, gx + (24 - gw) / 2, gy + 8 + font->ascent, pins[i].glyph, PX.main);
+            rect(d, gx, gy, icon_size, icon_size, PX.main);
+            int gw = text_w(desk_pins[i].glyph);
+            text_out(d, gx + (icon_size - gw) / 2,
+                     gy + (icon_size - font->ascent - font->descent) / 2 + font->ascent,
+                     desk_pins[i].glyph, PX.main);
         }
-        int lw = text_w(pins[i].label);
+        int lw = text_w(desk_pins[i].label);
         if (lw > 72) lw = 72;
-        clipped_text(d, x + (80 - lw) / 2, y + 40 + font->ascent,
-                     pins[i].label, 72, PX.text);
+        clipped_text(d, x + (80 - lw) / 2, y + 16 + icon_size + font->ascent,
+                     desk_pins[i].label, 72, PX.text);
+    }
+    if (drag.kind == 3 && drag.moved) {
+        int x0 = drag.start_x < drag.band_x ? drag.start_x : drag.band_x;
+        int y0 = drag.start_y < drag.band_y ? drag.start_y : drag.band_y;
+        int x1 = drag.start_x > drag.band_x ? drag.start_x : drag.band_x;
+        int y1 = drag.start_y > drag.band_y ? drag.start_y : drag.band_y;
+        if (x1 > x0 && y1 > y0) {
+            fill(d, x0, y0, x1 - x0, y1 - y0,
+                 alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 18)));
+            rect(d, x0, y0, x1 - x0, y1 - y0, PX.main);
+        }
+    }
+    if (drag.kind == 4 && drag.moved && drag.target_slot >= 0) {
+        int cols = desktop_cols();
+        int x = 16 + (drag.target_slot % cols) * DESK_COL_W;
+        int y = 16 + (drag.target_slot / cols) * DESK_ROW_H;
+        fill(d, x, y, 80, 88, alloc_rgb(color_blend_rgb(theme.bg_top, theme.main, 24)));
+        rect(d, x, y, 80, 88, PX.main);
     }
 }
 
@@ -1457,6 +1717,12 @@ static void draw_bar(void)
             text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph,
                      lit ? PX.title_text : PX.text);
         }
+    }
+    if (drag.kind == 4 && drag.moved && drag.target_order >= 0) {
+        int drop_x = 168 + drag.target_order * 40 - 3;
+        int drop_end = bar_power_x() - 10;
+        if (drop_x > drop_end) drop_x = drop_end;
+        fill(d, drop_x, by, 2, bh, PX.main);
     }
     /* power button */
     int pw = 34, px = bar_power_x();
@@ -1583,7 +1849,7 @@ static void draw_launcher(void)
     Drawable d = pm ? pm : launch_win;
     fill(d, 0, 0, 300, h, PX.win_bg);
     rect(d, 0, 0, 300, h, PX.main);
-    text_out(d, 10, 8 + font->ascent, launch_pin_mode ? "Add to Home: click app to pin/unpin" : launch_all && !launch_q[0] ? "All installed apps - Esc goes back" : launch_q[0] ? "Search apps - right-click pins to Home" : "Core apps - type to search all", PX.main);
+    text_out(d, 10, 8 + font->ascent, launch_pin_mode ? "App placement: click an app" : launch_all && !launch_q[0] ? "All installed apps - Esc goes back" : launch_q[0] ? "Search - right-click for placement" : "Core apps - type to search all", PX.main);
     rect(d, 10, 26, 280, 20, PX.main);
     text_out(d, 14, 30 + font->ascent, launch_q, PX.text);
     int caret_x = 14 + text_w(launch_q);
@@ -1602,10 +1868,12 @@ static void draw_launcher(void)
         else text_out(d, 12, yy + 4 + font->ascent, it->glyph, selected ? PX.title_text : PX.main);
         /* A bright selection with dark text is actually distinguishable;
          * either green text colour on the old green row was not. */
-        clipped_text(d, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
+        int pin_mask = it->app_idx >= 0 ? app_pin_mask(it->app_idx) : 0;
+        clipped_text(d, 44, yy + 4 + font->ascent, it->name, pin_mask ? 205 : 248,
                      selected ? PX.title_text : PX.text);
-        if (it->app_idx >= 0 && app_is_pinned(it->app_idx))
-            text_out(d, 262, yy + 4 + font->ascent, "PIN", selected ? PX.title_text : PX.main);
+        if (pin_mask)
+            text_out(d, 262, yy + 4 + font->ascent, pin_mask == 3 ? "T+D" : pin_mask == 1 ? "T" : "D",
+                     selected ? PX.title_text : PX.main);
         yy += 24;
     }
     if (!n) text_out(d, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
@@ -1667,6 +1935,51 @@ static void menu_open(int kind, int x, int y, Window target)
     if (menu_y + h > screen_h - bar_h) menu_y = screen_h - bar_h - h - 2;
     if (menu_y < 2) menu_y = 2;
     XMoveResizeWindow(dpy, menu_win, menu_x, menu_y, w, h);
+    XMapWindow(dpy, menu_win);
+    XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
+    draw_menu();
+}
+
+static void shortcut_menu_item(const char *label, int action)
+{
+    if (menu_n >= 8) return;
+    snprintf(menu_labels[menu_n], 64, "%s", label);
+    menu_actions[menu_n] = action;
+    menu_n++;
+}
+
+static void menu_open_shortcut(const struct pin *p, int source, int x, int y)
+{
+    if (!p) return;
+    menu_close();
+    menu_kind = MENU_SHORTCUT;
+    menu_target = None;
+    menu_pin = *p;
+    menu_pin_source = source;
+    menu_hover = -1; menu_n = 0;
+    int on_bar = pin_list_find(pins, npins, p) >= 0;
+    int on_desktop = pin_list_find(desk_pins, ndesk_pins, p) >= 0;
+    shortcut_menu_item("Launch", SC_LAUNCH);
+    if (source != SHORTCUT_BAR) {
+        shortcut_menu_item(on_bar ? "Remove from taskbar" : "Add to taskbar",
+                           on_bar ? SC_REMOVE_BAR : SC_ADD_BAR);
+        if (source == SHORTCUT_DESKTOP) shortcut_menu_item("Move to taskbar", SC_MOVE_BAR);
+    }
+    if (source != SHORTCUT_DESKTOP) {
+        shortcut_menu_item(on_desktop ? "Remove from desktop" : "Add to desktop",
+                           on_desktop ? SC_REMOVE_DESK : SC_ADD_DESK);
+        if (source == SHORTCUT_BAR) shortcut_menu_item("Move to desktop", SC_MOVE_DESK);
+    }
+    if (source == SHORTCUT_DESKTOP) shortcut_menu_item("Remove from desktop", SC_REMOVE_DESK);
+    else if (source == SHORTCUT_BAR) shortcut_menu_item("Remove from taskbar", SC_REMOVE_BAR);
+
+    menu_w = 220; menu_x = x; menu_y = y;
+    int h = menu_n * 24 + 6;
+    if (menu_x + menu_w > screen_w) menu_x = screen_w - menu_w - 2;
+    if (menu_x < 2) menu_x = 2;
+    if (menu_y + h > screen_h - bar_h) menu_y = screen_h - bar_h - h - 2;
+    if (menu_y < 2) menu_y = 2;
+    XMoveResizeWindow(dpy, menu_win, menu_x, menu_y, menu_w, h);
     XMapWindow(dpy, menu_win);
     XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     draw_menu();
@@ -1789,6 +2102,32 @@ static void menu_action(int idx)
             break;
         case 7: running = 0; break;
         }
+    } else if (kind == MENU_SHORTCUT) {
+        struct pin p = menu_pin;
+        int source = menu_pin_source;
+        int action = idx >= 0 && idx < 8 ? menu_actions[idx] : -1;
+        if (action == SC_LAUNCH) {
+            if (launch_open) launcher_toggle(0);
+            launch_pin_value(&p);
+            return;
+        }
+        int bar_index = pin_list_find(pins, npins, &p);
+        int desk_index = pin_list_find(desk_pins, ndesk_pins, &p);
+        int changed = 0;
+        if (action == SC_ADD_BAR) changed = taskbar_insert(&p, -1) >= 0;
+        else if (action == SC_ADD_DESK) changed = desktop_place(&p, -1) >= 0;
+        else if (action == SC_MOVE_BAR && taskbar_insert(&p, -1) >= 0) {
+            if (source == SHORTCUT_DESKTOP) desktop_remove(desk_index);
+            changed = 1;
+        } else if (action == SC_MOVE_DESK && desktop_place(&p, -1) >= 0) {
+            if (source == SHORTCUT_BAR) taskbar_remove(bar_index);
+            changed = 1;
+        } else if (action == SC_REMOVE_BAR && bar_index >= 0) {
+            taskbar_remove(bar_index); changed = 1;
+        } else if (action == SC_REMOVE_DESK && desk_index >= 0) {
+            desktop_remove(desk_index); changed = 1;
+        }
+        if (changed) shortcuts_saved("Shortcut layout");
     } else if (kind == MENU_TITLE) {
         struct client *c = find_client(target);
         if (c) {
@@ -1883,6 +2222,7 @@ static void on_button(XButtonEvent *e)
      * repaints (suppressed mid-drag) never resumed, so closed windows
      * left ghost frames on the desktop. */
     if (e->type == ButtonRelease && drag.kind) {
+        if (drag.kind == 4) { shortcut_drag_finish(); return; }
         XUngrabPointer(dpy, CurrentTime);
         if (drag.kind == 3) {
             drag.band_x = x; drag.band_y = y;
@@ -1891,7 +2231,7 @@ static void on_button(XButtonEvent *e)
             int byy = drag.start_y < drag.band_y ? drag.start_y : drag.band_y;
             int bx2 = drag.start_x > drag.band_x ? drag.start_x : drag.band_x;
             int by2 = drag.start_y > drag.band_y ? drag.start_y : drag.band_y;
-            for (int i = 0; i < npins; i++) {
+            for (int i = 0; i < ndesk_pins; i++) {
                 int ix, iy; icon_rect(i, &ix, &iy);
                 if (ix < bx2 && ix + 80 > bx && iy < by2 && iy + 88 > byy)
                     desk_sel_mask |= 1ul << i;
@@ -1950,19 +2290,18 @@ static void on_button(XButtonEvent *e)
             struct bar_item *it = &bar_items[i];
             if (e->x >= it->x && e->x < it->x + it->w &&
                 e->y >= 6 && e->y < bar_h - 6) {
+                if (e->button == Button3) {
+                    menu_open_shortcut(&pins[it->idx], SHORTCUT_BAR, x, y);
+                    menu_bar_release = 1;
+                    return;
+                }
                 if (e->button == Button1) {
-                    /* Instant visible feedback on mousedown, plus a
-                     * short "starting" flash afterwards: launching a
-                     * real app can take a second or two, and with no
-                     * response at all a normal click looked like it
-                     * had to be held down to register. */
+                    /* Press feedback is immediate, but activation waits for
+                     * a no-motion release so the same gesture can become a
+                     * taskbar reorder or a drag to the desktop. */
                     bar_press = i;
-                    bar_flash_pin = it->idx;
-                    bar_flash_until = time(NULL) + 2;
                     draw_bar();
-                    launch_pin(it->idx);
-                    bar_press = -1; /* the two-second launch flash is not a held button */
-                    draw_bar();
+                    shortcut_drag_begin(SHORTCUT_BAR, it->idx, e, 0, 0);
                 }
                 return;
             }
@@ -1990,9 +2329,23 @@ static void on_button(XButtonEvent *e)
         int n = launch_rebuild();
         int idx = launch_offset + row;
         if ((e->button == Button3 || (e->button == Button1 && launch_pin_mode)) &&
-            idx >= 0 && idx < n && launch_items[idx].app_idx >= 0) {
-            toggle_app_pin(launch_items[idx].app_idx);
-            draw_launcher();
+            idx >= 0 && idx < n && launch_items[idx].action != ACTION_ALLAPPS) {
+            struct launch_item *item = &launch_items[idx];
+            struct pin p; memset(&p, 0, sizeof(p)); p.slot = -1;
+            snprintf(p.label, sizeof(p.label), "%s", item->name);
+            snprintf(p.glyph, sizeof(p.glyph), "%s", item->glyph);
+            snprintf(p.icon, sizeof(p.icon), "%s", item->icon);
+            snprintf(p.command, sizeof(p.command), "%s", item->command);
+            p.action = item->action;
+            if (item->app_idx >= 0 && item->app_idx < napps)
+                snprintf(p.match, sizeof(p.match), "%s", apps[item->app_idx].id);
+            else if (item->action == CORE_NONE) {
+                for (int i = 0; i < npins; i++)
+                    if (!strcmp(pins[i].label, p.label) && !strcmp(pins[i].command, p.command)) { p = pins[i]; break; }
+                for (int i = 0; i < ndesk_pins; i++)
+                    if (!strcmp(desk_pins[i].label, p.label) && !strcmp(desk_pins[i].command, p.command)) { p = desk_pins[i]; break; }
+            }
+            menu_open_shortcut(&p, SHORTCUT_LAUNCHER, e->x_root, e->y_root);
             return;
         }
         if (e->button == Button1 && idx >= 0 && idx < n) {
@@ -2016,7 +2369,7 @@ static void on_button(XButtonEvent *e)
             int byy = drag.start_y < drag.band_y ? drag.start_y : drag.band_y;
             int bx2 = drag.start_x > drag.band_x ? drag.start_x : drag.band_x;
             int by2 = drag.start_y > drag.band_y ? drag.start_y : drag.band_y;
-            for (int i = 0; i < npins; i++) {
+            for (int i = 0; i < ndesk_pins; i++) {
                 int ix, iy; icon_rect(i, &ix, &iy);
                 if (ix < bx2 && ix + 80 > bx && iy < by2 && iy + 88 > byy)
                     desk_sel_mask |= 1ul << i;
@@ -2030,12 +2383,19 @@ static void on_button(XButtonEvent *e)
             return;
         }
         if (e->button == Button3) {
+            for (int i = 0; i < ndesk_pins; i++) {
+                int ix, iy; icon_rect(i, &ix, &iy);
+                if (x >= ix && x < ix + 80 && y >= iy && y < iy + 88) {
+                    menu_open_shortcut(&desk_pins[i], SHORTCUT_DESKTOP, x, y);
+                    return;
+                }
+            }
             menu_open(MENU_DESKTOP, x, y, None);
             return;
         }
         if (e->button != Button1) return;
         int hit = -1;
-        for (int i = 0; i < npins; i++) {
+        for (int i = 0; i < ndesk_pins; i++) {
             int ix, iy; icon_rect(i, &ix, &iy);
             if (x >= ix && x < ix + 80 && y >= iy && y < iy + 88) hit = i;
         }
@@ -2049,7 +2409,9 @@ static void on_button(XButtonEvent *e)
             last_click.x = x; last_click.y = y; last_click.icon = hit;
             desk_sel_mask = 1ul << hit;
             draw_desktop();
-            if (dbl) launch_pin(hit);
+            if (dbl) { launch_desktop_pin(hit); return; }
+            int icon_x, icon_y; icon_rect(hit, &icon_x, &icon_y);
+            shortcut_drag_begin(SHORTCUT_DESKTOP, hit, e, icon_x, icon_y);
             return;
         }
         last_click.icon = -1;
@@ -2058,6 +2420,7 @@ static void on_button(XButtonEvent *e)
          * and looked like clicking off an icon never un-highlighted it */
         if (desk_sel_mask) { desk_sel_mask = 0; draw_desktop(); }
         drag.kind = 3; drag.start_x = drag.band_x = x; drag.start_y = drag.band_y = y;
+        drag.moved = 0; drag.band_drawn = 0;
         grab_drag_pointer(NULL, e->time);
         desk_sel_mask = 0;
         return;
@@ -2175,7 +2538,7 @@ static void on_motion(XMotionEvent *e)
             if (idx != menu_hover) { menu_hover = idx; draw_menu(); }
         } else if (e->window == root) {
             int hit = -1;
-            for (int i = 0; i < npins; i++) {
+            for (int i = 0; i < ndesk_pins; i++) {
                 int ix, iy; icon_rect(i, &ix, &iy);
                 if (e->x_root >= ix && e->x_root < ix + 80 &&
                     e->y_root >= iy && e->y_root < iy + 88) hit = i;
@@ -2221,8 +2584,12 @@ static void on_motion(XMotionEvent *e)
     }
     if (drag.kind == 3) {
         drag.band_x = e->x_root; drag.band_y = e->y_root;
+        if (abs(drag.band_x - drag.start_x) > 4 || abs(drag.band_y - drag.start_y) > 4)
+            drag.moved = 1;
+        if (drag.moved) draw_desktop();
         return;
     }
+    if (drag.kind == 4) { shortcut_drag_motion(e); return; }
     struct client *c = drag.c;
     if (!c) { drag.kind = 0; return; }
     if (drag.kind == 1) {                    /* move */
@@ -2340,25 +2707,35 @@ static void pin_set_glyph(struct pin *p, const char *glyph)
     p->glyph[1] = 0;
 }
 
-static void build_pins(void)
+static int desktop_cols(void)
 {
-    npins = 0;
+    int cols = (screen_w - 32) / DESK_COL_W;
+    return cols > 0 ? cols : 1;
+}
+
+static int desktop_slot_count(void)
+{
+    int rows = (screen_h - bar_h - 32) / DESK_ROW_H;
+    if (rows < 1) rows = 1;
+    int count = desktop_cols() * rows;
+    return count > 1024 ? 1024 : count;
+}
+
+static void build_pin_list(const char *spec, struct pin *list, int *count)
+{
+    *count = 0;
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", cfg.pins);
-    for (char *tok = strtok(buf, ","); tok && npins < 32; tok = strtok(NULL, ",")) {
+    snprintf(buf, sizeof(buf), "%s", spec ? spec : "");
+    for (char *tok = strtok(buf, ","); tok && *count < MAX_PINS; tok = strtok(NULL, ",")) {
         while (*tok == ' ') tok++;
         char *end = tok + strlen(tok);
         while (end > tok && end[-1] == ' ') *--end = 0;
         if (!*tok) continue;
-
-        /* Removed non-core pseudo-apps are ignored rather than turned
-         * into dead taskbar buttons. */
         if (!strcasecmp(tok, "web-browser") || !strcasecmp(tok, "browser")) continue;
 
-        struct pin *p = &pins[npins];
+        struct pin *p = &list[*count];
         memset(p, 0, sizeof(*p));
-
-        /* The four retained SCos core apps. */
+        p->slot = -1;
         int core = -1;
         for (unsigned int i = 0; i < sizeof(core_apps) / sizeof(core_apps[0]); i++) {
             const char *id = core_apps[i].action == CORE_TERMINAL ? "terminal" :
@@ -2371,14 +2748,12 @@ static void build_pins(void)
             snprintf(p->glyph, sizeof(p->glyph), "%s", core_apps[core].glyph);
             snprintf(p->icon, sizeof(p->icon), "%s", core_apps[core].icon);
             p->action = core_apps[core].action;
-            npins++;
+            (*count)++;
             continue;
         }
 
-        /* Then a user's real .desktop applications. */
         int found = -1;
-        for (int i = 0; i < napps; i++)
-            if (!strcasecmp(apps[i].id, tok)) found = i;
+        for (int i = 0; i < napps; i++) if (!strcasecmp(apps[i].id, tok)) found = i;
         if (found < 0)
             for (int i = 0; i < napps; i++)
                 if (ci_contains(apps[i].id, tok) || ci_contains(apps[i].name, tok)) { found = i; break; }
@@ -2390,19 +2765,46 @@ static void build_pins(void)
             snprintf(p->match, sizeof(p->match), "%s", apps[found].id);
             snprintf(p->icon, sizeof(p->icon), "%s", apps[found].icon[0] ? apps[found].icon : apps[found].id);
             pin_set_glyph(p, "");
-            npins++;
+            (*count)++;
             continue;
         }
 
-        /* Finally, an explicit bare command from the user's own config. */
         snprintf(p->label, sizeof(p->label), "%s", tok);
         snprintf(p->command, sizeof(p->command), "%s", tok);
         snprintf(p->match, sizeof(p->match), "%s", tok);
         snprintf(p->icon, sizeof(p->icon), "%s", tok);
         p->label[0] = (char)toupper((unsigned char)p->label[0]);
         pin_set_glyph(p, "");
-        npins++;
+        (*count)++;
     }
+}
+
+static void desktop_normalize_slots(void)
+{
+    int total = desktop_slot_count();
+    if (total < 1) total = 1;
+    unsigned char used[1024] = { 0 };
+    char requested[512];
+    snprintf(requested, sizeof(requested), "%s", cfg.desktop_slots);
+    char *tok = strtok(requested, ",");
+    for (int i = 0; i < ndesk_pins; i++) {
+        int slot = tok ? (int)strtol(tok, NULL, 10) : -1;
+        tok = strtok(NULL, ",");
+        if (slot < 0 || slot >= total || used[slot]) {
+            slot = 0;
+            while (slot < total && used[slot]) slot++;
+            if (slot >= total) slot = i % total;
+        }
+        desk_pins[i].slot = slot;
+        used[slot] = 1;
+    }
+}
+
+static void build_pins(void)
+{
+    build_pin_list(cfg.pins, pins, &npins);
+    build_pin_list(cfg.desktop_pins, desk_pins, &ndesk_pins);
+    desktop_normalize_slots();
 }
 
 /* ------------------------------------------------------------------ main */
@@ -2417,6 +2819,10 @@ static void load_config(void)
     else if (home && home[0]) snprintf(config_path, sizeof(config_path), "%s/.config/scoswm/scoswm.conf", home);
     else snprintf(config_path, sizeof(config_path), "scoswm.conf");
     config_load_file(config_path, &cfg);
+    if (!cfg.has_desktop_pins) {
+        snprintf(cfg.desktop_pins, sizeof(cfg.desktop_pins), "%s", cfg.pins);
+        cfg.has_desktop_pins = 1;
+    }
     const struct scos_theme *t = theme_by_id(cfg.theme);
     if (t) theme = *t;
     else theme_apply_custom(&theme, &cfg);
@@ -2638,7 +3044,7 @@ static void create_ui_windows(void)
  * They add no daemon and no background work: Settings only writes the
  * existing config file, and SysMon only samples /proc + /sys while it
  * is visible. Terminal and Files remain the user's real Linux programs. */
-static int settings_field;              /* 0 none, 1 terminal, 2 files, 3 pins */
+static int settings_field;              /* 0 none, 1 terminal, 2 files, 3 taskbar, 4 desktop */
 static char settings_edit[1024];
 static char settings_status[160];
 
@@ -2712,6 +3118,8 @@ static void apply_bar_height_live(int v)
     if (v > 64) v = 64;
     cfg.bar_height = v;
     bar_h = v;
+    desktop_normalize_slots();
+    pins_sync_config();
     for (int i = 0; i < nclients; i++) {
         xicon_destroy_owned(clients[i]->icon);
         clients[i]->icon = client_load_icon(clients[i]);
@@ -2730,11 +3138,20 @@ static void apply_bar_height_live(int v)
     save_settings("Taskbar height");
 }
 
+static void apply_desktop_icon_size_live(int size)
+{
+    if (size != 24 && size != 32 && size != 48) return;
+    cfg.desktop_icon_size = size;
+    draw_desktop();
+    save_settings("Desktop icon size");
+}
+
 static char *settings_target(int field, size_t *cap)
 {
     if (field == 1) { *cap = sizeof(cfg.terminal); return cfg.terminal; }
     if (field == 2) { *cap = sizeof(cfg.files); return cfg.files; }
     if (field == 3) { *cap = sizeof(cfg.pins); return cfg.pins; }
+    if (field == 4) { *cap = sizeof(cfg.desktop_pins); return cfg.desktop_pins; }
     return NULL;
 }
 
@@ -2758,9 +3175,9 @@ static void commit_settings_field(void)
     char *e = s + strlen(s);
     while (e > s && (e[-1] == ' ' || e[-1] == '\t')) *--e = 0;
     snprintf(target, cap, "%s", s);
-    int was_pins = settings_field == 3;
+    int was_pins = settings_field >= 3;
     settings_field = 0;
-    if (was_pins) { build_pins(); desk_sel_mask = 0; redraw_everything(); }
+    if (was_pins) { build_pins(); pins_sync_config(); desk_sel_mask = 0; redraw_everything(); }
     save_settings("Settings");
 }
 
@@ -2964,9 +3381,9 @@ static void draw_tool(void)
                  selected ? PX.title_text : PX.text);
     }
 
-    static const char *labels[4] = { "", "Terminal", "Files", "Pins" };
-    for (int field = 1; field <= 3; field++) {
-        int y = 124 + (field - 1) * 44;
+    static const char *labels[5] = { "", "Terminal", "Files", "Taskbar pins", "Desktop pins" };
+    for (int field = 1; field <= 4; field++) {
+        int y = 116 + (field - 1) * 36;
         text_out(d, 16, y + 9 + font->ascent, labels[field], PX.main);
         int editing = settings_field == field;
         fill(d, 100, y, 424, 30, editing ? PX.main : PX.win_bg);
@@ -2979,7 +3396,7 @@ static void draw_tool(void)
         else if (field == 2) {
             const char *e = detect_files_exec();
             snprintf(shown, sizeof(shown), "(auto: %s)", e ? e : "xdg-open");
-        } else snprintf(shown, sizeof(shown), "%s", cfg.pins);
+        } else shown[0] = 0;
         clipped_text(d, 108, y + 9 + font->ascent, shown, 390, editing ? PX.title_text : PX.text);
         if (editing && (time(NULL) % 2) == 0) {
             int cx = 108 + text_w(settings_edit);
@@ -2987,16 +3404,26 @@ static void draw_tool(void)
         }
     }
 
-    text_out(d, 16, 268 + font->ascent, "Taskbar", PX.main);
-    rect(d, 100, 256, 34, 30, PX.main);
-    text_out(d, 112, 265 + font->ascent, "-", PX.text);
+    text_out(d, 16, 277 + font->ascent, "Taskbar", PX.main);
+    rect(d, 100, 268, 34, 30, PX.main);
+    text_out(d, 112, 277 + font->ascent, "-", PX.text);
     char bh[32]; snprintf(bh, sizeof(bh), "%d px", cfg.bar_height);
-    text_out(d, 146, 265 + font->ascent, bh, PX.text);
-    rect(d, 204, 256, 34, 30, PX.main);
-    text_out(d, 216, 265 + font->ascent, "+", PX.text);
+    text_out(d, 146, 277 + font->ascent, bh, PX.text);
+    rect(d, 204, 268, 34, 30, PX.main);
+    text_out(d, 216, 277 + font->ascent, "+", PX.text);
 
-    clipped_text(d, 16, 316, settings_status[0] ? settings_status :
-                 "Theme and taskbar apply immediately. Click a field to edit it.", 508, PX.text);
+    text_out(d, 250, 277 + font->ascent, "Icons", PX.main);
+    rect(d, 300, 268, 34, 30, PX.main);
+    text_out(d, 312, 277 + font->ascent, "-", PX.text);
+    char is[32]; snprintf(is, sizeof(is), "%d", cfg.desktop_icon_size);
+    text_out(d, 346, 277 + font->ascent, is, PX.text);
+    rect(d, 386, 268, 34, 30, PX.main);
+    text_out(d, 398, 277 + font->ascent, "+", PX.text);
+    rect(d, 440, 268, 84, 30, PX.main);
+    text_out(d, 450, 277 + font->ascent, cfg.desktop_grid ? "Grid on" : "Grid off", PX.text);
+
+    clipped_text(d, 16, 326, settings_status[0] ? settings_status :
+                 "Click fields to edit. Drag shortcuts to rearrange or move between surfaces.", 508, PX.text);
     text_out(d, 16, TOOL_H - 18, "Single workspace by design - no pager or workspace daemon", PX.title_off);
     surface_present(tool_win, pm, TOOL_W, TOOL_H);
 }
@@ -3012,17 +3439,29 @@ static int tool_button(XButtonEvent *e)
                 if (e->x >= x && e->x < x + 120) { apply_theme_live(i); draw_tool(); return 1; }
             }
         }
-        for (int field = 1; field <= 3; field++) {
-            int y = 124 + (field - 1) * 44;
+        for (int field = 1; field <= 4; field++) {
+            int y = 116 + (field - 1) * 36;
             if (e->x >= 100 && e->x < 524 && e->y >= y && e->y < y + 30) {
                 start_settings_field(field); draw_tool(); return 1;
             }
         }
-        if (e->y >= 256 && e->y < 286 && e->x >= 100 && e->x < 134) {
+        if (e->y >= 268 && e->y < 298 && e->x >= 100 && e->x < 134) {
             apply_bar_height_live(cfg.bar_height - 4); draw_tool(); return 1;
         }
-        if (e->y >= 256 && e->y < 286 && e->x >= 204 && e->x < 238) {
+        if (e->y >= 268 && e->y < 298 && e->x >= 204 && e->x < 238) {
             apply_bar_height_live(cfg.bar_height + 4); draw_tool(); return 1;
+        }
+        if (e->y >= 268 && e->y < 298 && e->x >= 300 && e->x < 334) {
+            int size = cfg.desktop_icon_size == 48 ? 32 : 24;
+            apply_desktop_icon_size_live(size); draw_tool(); return 1;
+        }
+        if (e->y >= 268 && e->y < 298 && e->x >= 386 && e->x < 420) {
+            int size = cfg.desktop_icon_size == 24 ? 32 : 48;
+            apply_desktop_icon_size_live(size); draw_tool(); return 1;
+        }
+        if (e->y >= 268 && e->y < 298 && e->x >= 440 && e->x < 524) {
+            cfg.desktop_grid = !cfg.desktop_grid;
+            draw_desktop(); save_settings("Desktop grid"); draw_tool(); return 1;
         }
     }
     return 1;
@@ -3045,7 +3484,7 @@ static int tool_key(XKeyEvent *e)
             draw_tool(); return 1;
         }
         if (ks == XK_Tab) {
-            int next = settings_field % 3 + 1;
+            int next = settings_field % 4 + 1;
             commit_settings_field(); start_settings_field(next); draw_tool(); return 1;
         }
         char buf[16];
@@ -3219,8 +3658,8 @@ int main(int argc, char **argv)
     }
     recalc_struts();
 
-    fprintf(stderr, "scoswm %s: %dx%d, theme %s, %d apps, %d pins\n",
-            VERSION, screen_w, screen_h, theme.id, napps, npins);
+    fprintf(stderr, "scoswm %s: %dx%d, theme %s, %d apps, %d taskbar pins, %d desktop pins\n",
+            VERSION, screen_w, screen_h, theme.id, napps, npins, ndesk_pins);
 
     /* ------------------------------------------------------------ events */
     time_t last_clock = 0;
@@ -3273,6 +3712,7 @@ int main(int argc, char **argv)
                     (ev.xconfigure.width != screen_w || ev.xconfigure.height != screen_h)) {
                     screen_w = ev.xconfigure.width; screen_h = ev.xconfigure.height;
                     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
+                    desktop_normalize_slots(); pins_sync_config();
                     draw_desktop(); draw_bar(); recalc_struts();
                 }
                 break;

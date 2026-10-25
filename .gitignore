@@ -3,5 +3,6 @@
 /test_util
 /test_terminal
 /test_pty
+/test_file_client
 /*.deb
 __pycache__/
