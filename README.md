@@ -79,7 +79,7 @@ Any distro:
 
 ```sh
 make
-sudo make install          # WM + scos-terminal + desktop/session entries
+sudo make install          # WM + terminal + icons/cursor theme + session entries
 ```
 
 ### Selecting SCosWM in SDDM
@@ -140,15 +140,36 @@ startx
 | Desktop menu | Right-click the desktop |
 | Power menu | Taskbar power button: lock, restart/exit the WM, suspend, reboot, power off (via `systemctl`) |
 
-Desktop, taskbar and launcher icons are the apps' real
-`Icon=` images, resolved from the freedesktop icon theme and
-`/usr/share/pixmaps` at the normal small sizes — 24 px on
+Terminal, Files, SysMon and Settings use their bundled `scos-terminal`,
+`scos-files`, `scos-sysmon` and `scos-settings` images directly; they do
+not depend on generic theme icon names. Other desktop, taskbar and
+launcher icons are the apps' real `Icon=` images, resolved from the
+freedesktop icon theme and `/usr/share/pixmaps` at the normal small
+sizes — 24 px on
 the desktop, up to 20 px in taskbar pins and 16 px beside titles in the
 Windows picker (smaller automatically when the taskbar is shortened). PNG and XPM
 are decoded directly; SVG themes such as Breeze use the recommended
 `gdk-pixbuf`/`librsvg` loader when installed. Icons are decoded once and
 cached as X pixmaps; only an app with no readable image keeps the SCos
 letter-glyph fallback rather than growing the layout.
+
+### Consistent SCos cursors
+
+The package installs the **SCos** Xcursor theme (24/32/48 px images plus
+common GTK/Qt/CSS cursor aliases) under `/usr/share/icons/SCos`. The
+session explicitly selects it instead of inheriting KDE's Breeze choice,
+and the WM publishes the same name and size through root `RESOURCE_MANAGER`
+resources and the standard GTK `Gtk/CursorThemeName` /
+`Gtk/CursorThemeSize` XSETTINGS properties. This covers the desktop, WM
+frames and application interiors, including Qt 6 and GTK clients, without
+running a settings daemon. Root/frame cursor inheritance alone is not
+relied upon.
+
+Set `SCOS_CURSOR_THEME` and/or `SCOS_CURSOR_SIZE` before
+`scoswm-session` only if you deliberately want a different theme or size.
+The generated cursor and application images are shipped in the repository;
+Python is needed only to regenerate them with
+`packaging/generate_artwork.py`, never to build or run SCosWM.
 
 The launcher's normal view is deliberately curated to the four core
 apps plus your pins. Once you type, it searches installed apps too,
@@ -258,13 +279,14 @@ WM, manages a real Xlib client
 (`tests/xprobe.c`). Without any X server the integration step reports
 SKIP. `tests/run_graphical.sh` additionally runs headless graphical
 regressions when a `node-x11` checkout with `lib/xserver` is available:
-set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry,
-28 px taskbar bounds, the upward power-symbol opening, readable launcher
-selection, close hover, dock stacking, the pinned-only taskbar, picker-based
-resize-free minimise/restore, 20 rapid window-withdrawal/reuse cycles, real
-terminal icons in both the pin and Windows picker, cursor inheritance,
-buffered terminal resize/move behavior, and mouse-opened Settings with live
-persisted 28/32 px taskbar scaling.
+set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry and
+both right-border columns, 28 px taskbar bounds, the upward power-symbol
+opening, high-contrast launcher/menu/Settings selections, close hover, dock
+stacking, the pinned-only taskbar, picker-based resize-free
+minimise/restore, 20 rapid window-withdrawal/reuse cycles, real images for
+all four built-ins, Qt/GTK cursor settings and cursor inheritance, buffered
+terminal resize/move behavior, and mouse-opened Settings with live persisted
+28/32 px taskbar scaling.
 
 `PORTING.md` documents how each piece of the SCos desktop maps onto
 this WM and where real-application behaviour necessarily differs.
@@ -275,5 +297,5 @@ this WM and where real-application behaviour necessarily differs.
 - `src/scos-terminal.c` — standalone Xlib terminal frontend and PTY sessions
 - `src/term_emulation.c` — display-independent terminal screen and VT parser
 - `src/util.c` — X-independent helpers: themes, config, `.desktop` discovery, Linux `/proc` parsers
-- `packaging/` — display-manager session, example config, session script
+- `packaging/` — display-manager session, example config, built-in artwork, SCos cursor theme and deterministic artwork generator
 - `tests/` — unit tests, integration harness client/probe

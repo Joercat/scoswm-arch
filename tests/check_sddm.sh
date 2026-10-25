@@ -40,10 +40,29 @@ grep -qx 'Terminal=false' "$app" || { echo "FAIL: graphical terminal must not be
 grep -qx 'Icon=scos-terminal' "$app" || { echo "FAIL: terminal uses a generic icon"; exit 1; }
 grep -qx 'StartupWMClass=SCosTerminal' "$app" || { echo "FAIL: terminal KDE window class is not mapped"; exit 1; }
 for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256; do
-    icon="$tmp/usr/share/icons/hicolor/$size/apps/scos-terminal.png"
-    [ -s "$icon" ] || { echo "FAIL: missing SCos Terminal icon ($icon)"; exit 1; }
+    for name in scos-terminal scos-files scos-sysmon scos-settings; do
+        icon="$tmp/usr/share/icons/hicolor/$size/apps/$name.png"
+        [ -s "$icon" ] || { echo "FAIL: missing built-in application icon ($icon)"; exit 1; }
+    done
 done
+
+cursor_dir="$tmp/usr/share/icons/SCos/cursors"
+for name in left_ptr default arrow xterm text hand2 pointer watch wait move size_all \
+            hresize ew-resize e-resize vresize ns-resize n-resize bd_double_arrow \
+            fd_double_arrow ne-resize nw-resize not-allowed dnd-no-drop; do
+    [ -e "$cursor_dir/$name" ] || { echo "FAIL: missing SCos cursor or alias ($name)"; exit 1; }
+done
+[ "$(od -An -tx1 -N4 "$cursor_dir/left_ptr" | tr -d ' \n')" = "58637572" ] || {
+    echo "FAIL: SCos left_ptr is not an Xcursor file"; exit 1;
+}
+grep -qxF 'export XCURSOR_THEME=${SCOS_CURSOR_THEME:-SCos}' "$tmp/usr/bin/scoswm-session" || {
+    echo "FAIL: session does not select the SCos cursor theme"; exit 1;
+}
+grep -qxF 'export XCURSOR_SIZE=${SCOS_CURSOR_SIZE:-24}' "$tmp/usr/bin/scoswm-session" || {
+    echo "FAIL: session does not select a consistent cursor size"; exit 1;
+}
 
 echo "SDDM session check: SCosWM will be listed and launchable ($entry)"
 echo "Standalone application check: SCos Terminal is available to other desktops ($app)"
-echo "Application identity check: dedicated terminal icons and KDE window class installed"
+echo "Application identity check: four built-in icon sets and terminal KDE window class installed"
+echo "Cursor check: SCos Xcursor theme, aliases and session selection installed"

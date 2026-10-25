@@ -12,6 +12,14 @@ export XDG_SESSION_TYPE=${XDG_SESSION_TYPE:-x11}
 export XDG_CURRENT_DESKTOP=${XDG_CURRENT_DESKTOP:-SCosWM}
 export DESKTOP_SESSION=${DESKTOP_SESSION:-scoswm}
 
+# SDDM and KDE commonly export Breeze here. SCosWM is a different desktop,
+# so select its bundled cursor theme explicitly for every child application;
+# SCOS_CURSOR_THEME/SIZE remain available as deliberate user overrides.
+# The WM also publishes these values through X resources and XSETTINGS for
+# Qt 6 and GTK, which do not all consult the environment.
+export XCURSOR_THEME=${SCOS_CURSOR_THEME:-SCos}
+export XCURSOR_SIZE=${SCOS_CURSOR_SIZE:-24}
+
 # SCosWM supplies the titlebar and window controls.  Ask Firefox and
 # ordinary GTK windows to use those server-side decorations instead of
 # drawing a second set of buttons.  Explicit user environment choices

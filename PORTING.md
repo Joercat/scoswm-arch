@@ -43,6 +43,11 @@ EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 are reachable from the Windows picker). Root supports RandR-driven resize
 via its ConfigureNotify.
 
+Cursor consistency uses the bundled SCos Xcursor theme, explicit session
+`XCURSOR_THEME`/`XCURSOR_SIZE`, root `RESOURCE_MANAGER` entries for Qt, and
+a small WM-owned `_XSETTINGS_SETTINGS` manager containing GTK's cursor name
+and size. This is startup/publication code in the WM, not another daemon.
+
 By design: a single workspace only (no pager/workspace daemon) and no
 compositing effects. `_NET_WM_ICON` and freedesktop icon images are used
 for clients and pins. Text uses core fonts rather than Xft/fontconfig;
@@ -59,10 +64,11 @@ ISO10646 font when available for its Unicode cell grid.
 - `tests/run_graphical.sh`: uses a pure-JavaScript X11 server to drive
   the real Xlib WM and terminal without Xvfb. Set `SCOSWM_NODE_X11` to a
   `sidorares/node-x11` checkout containing `lib/xserver`. The saved
-  regression covers buffered drawing, desktop/taskbar geometry, power and
-  launcher colours, close hover, taskbar stacking, the pinned-only bar,
-  picker activation and resize-free minimise/restore, 20 window-reuse
-  cycles, terminal pin/picker icons and cursor behavior, pointer-driven
+  regression covers buffered drawing, desktop/taskbar geometry including
+  both right-border columns, power and high-contrast selection colours,
+  close hover, taskbar stacking, the pinned-only bar, picker activation and
+  resize-free minimise/restore, 20 window-reuse cycles, all four built-in
+  image sets, Qt/GTK cursor publication and inheritance, pointer-driven
   terminal resize/move, and mouse-opened Settings with live persisted
   taskbar scaling.
 - Earlier development runs also verified adoption, maximise/restore,

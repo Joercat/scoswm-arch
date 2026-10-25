@@ -52,7 +52,7 @@
 #include "util.h"
 
 #ifndef VERSION
-#define VERSION "0.5.2"
+#define VERSION "0.5.3"
 #endif
 
 #define TITLE_H 26
@@ -66,7 +66,7 @@
 /* ------------------------------------------------------------------ state */
 static Display *dpy;
 static int scr_no;
-static Window root, wmcheck, bar_win, launch_win, menu_win, tool_win, anim_win;
+static Window root, wmcheck, xsettings_win, bar_win, launch_win, menu_win, tool_win, anim_win;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -668,7 +668,7 @@ static void recalc_struts(void)
 static void manage(Window win)
 {
     if (win == bar_win || win == launch_win || win == menu_win || win == tool_win ||
-        win == anim_win || win == wmcheck) return;
+        win == anim_win || win == wmcheck || win == xsettings_win) return;
     if (find_client(win)) return;
     XWindowAttributes at;
     if (!XGetWindowAttributes(dpy, win, &at)) return;
@@ -808,10 +808,10 @@ static struct launch_item launch_items[2100];
 static int launch_nitems;
 
 static const struct { const char *name, *glyph, *icon, *keywords; int action; } core_apps[] = {
-    { "Terminal", "Tr", "utilities-terminal", "terminal shell console command", CORE_TERMINAL },
-    { "Files",    "Fi", "system-file-manager", "files file manager home documents downloads", CORE_FILES },
-    { "SysMon",   "Sy", "utilities-system-monitor", "sysmon system monitor cpu memory gpu processes", CORE_SYSMON },
-    { "Settings", "Se", "preferences-system", "settings theme configuration preferences", CORE_SETTINGS },
+    { "Terminal", "Tr", "scos-terminal", "terminal shell console command", CORE_TERMINAL },
+    { "Files",    "Fi", "scos-files", "files file manager home documents downloads", CORE_FILES },
+    { "SysMon",   "Sy", "scos-sysmon", "sysmon system monitor cpu memory gpu processes", CORE_SYSMON },
+    { "Settings", "Se", "scos-settings", "settings theme configuration preferences", CORE_SETTINGS },
 };
 
 static void run_core_action(int action);
@@ -1314,10 +1314,11 @@ static void paint_desktop(Drawable d)
     XSetForeground(dpy, gc, PX.grid);
     for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
     for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
-    /* The grid alone only promised a line at the origin. Frame the actual
-     * usable desktop explicitly so the right and bottom edges cannot
-     * disappear merely because the screen size is not a multiple of 64. */
+    /* Frame the usable desktop explicitly. The right rule is two pixels
+     * wide: a single rule in the final physical column was still invisible
+     * on the user's display, so keep an inner column visible as well. */
     rect(d, 0, 0, screen_w, screen_h - bar_h, PX.main);
+    if (screen_w > 1) fill(d, screen_w - 2, 0, 2, screen_h - bar_h, PX.main);
 
     /* desktop icons on the SCos 88x96 snap grid */
     for (int i = 0; i < npins; i++) {
@@ -1424,19 +1425,21 @@ static void draw_bar(void)
     fill(d, 0, 0, screen_w, 1, PX.main);
     int by = 6, bh = bar_h - 12;
     /* launcher button: the 2x2 SCos grid */
-    fill(d, 8, by, 34, bh, launch_open || bar_hover == -2 ? PX.bar_hi : PX.taskbar_bg);
+    int launch_lit = launch_open || bar_hover == -2;
+    fill(d, 8, by, 34, bh, launch_lit ? PX.main : PX.taskbar_bg);
     rect(d, 8, by, 34, bh, PX.main);
     int cell_h = bh < 24 ? 4 : 6;
     int grid_h = cell_h * 2 + 3;
     int grid_x = 8 + (34 - 19) / 2, grid_y = by + (bh - grid_h) / 2;
     for (int q = 0; q < 4; q++)
         fill(d, grid_x + (q % 2) * 11, grid_y + (q / 2) * (cell_h + 3), 8, cell_h,
-             launch_open ? PX.title_text : PX.main);
+             launch_lit ? PX.title_text : PX.main);
     /* Windows N picker */
     char wl[32]; snprintf(wl, sizeof(wl), "Windows %d", nclients);
-    fill(d, 48, by, 110, bh, bar_hover == -3 ? PX.bar_hi : PX.taskbar_bg);
+    int windows_lit = bar_hover == -3;
+    fill(d, 48, by, 110, bh, windows_lit ? PX.main : PX.taskbar_bg);
     rect(d, 48, by, 110, bh, PX.main);
-    clipped_text(d, 56, centered_baseline(by, bh), wl, 94, PX.text);
+    clipped_text(d, 56, centered_baseline(by, bh), wl, 94, windows_lit ? PX.title_text : PX.text);
 
     bar_layout();
     for (int i = 0; i < bar_n; i++) {
@@ -1444,21 +1447,23 @@ static void draw_bar(void)
         struct pin *p = &pins[it->idx];
         int lit = bar_press == i || bar_hover == i ||
                   (bar_flash_pin == it->idx && time(NULL) <= bar_flash_until);
-        fill(d, it->x, by, 34, bh, lit ? PX.bar_hi : PX.taskbar_bg);
+        fill(d, it->x, by, 34, bh, lit ? PX.main : PX.taskbar_bg);
         rect(d, it->x, by, 34, bh, PX.main);
         struct xicon *xi = xicon_get(p->icon, bar_icon_size(20));
         if (xicon_drawn(xi))
             draw_xicon(d, xi, it->x + (34 - xi->w) / 2, by + (bh - xi->h) / 2);
         else {
             int gw = text_w(p->glyph);
-            text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph, PX.text);
+            text_out(d, it->x + (34 - gw) / 2, centered_baseline(by, bh), p->glyph,
+                     lit ? PX.title_text : PX.text);
         }
     }
     /* power button */
     int pw = 34, px = bar_power_x();
-    fill(d, px, by, pw, bh, bar_hover == -4 ? PX.bar_hi : PX.taskbar_bg);
+    int power_lit = bar_hover == -4;
+    fill(d, px, by, pw, bh, power_lit ? PX.main : PX.taskbar_bg);
     rect(d, px, by, pw, bh, PX.main);
-    XSetForeground(dpy, gc, PX.main);
+    XSetForeground(dpy, gc, power_lit ? PX.title_text : PX.main);
     int radius = (bh - 4) / 2;
     if (radius > 7) radius = 7;
     if (radius < 3) radius = 3;
@@ -1590,16 +1595,17 @@ static void draw_launcher(void)
     int yy = 56;
     for (int r = 0; r < rows && launch_offset + r < n; r++) {
         struct launch_item *it = &launch_items[launch_offset + r];
-        if (launch_offset + r == launch_sel) fill(d, 6, yy - 3, 288, 22, PX.bar_hi);
+        int selected = launch_offset + r == launch_sel;
+        if (selected) fill(d, 6, yy - 3, 288, 22, PX.main);
         struct xicon *xi = xicon_get(it->icon, 20);
         if (xicon_drawn(xi)) draw_xicon(d, xi, 10, yy - 1);
-        else text_out(d, 12, yy + 4 + font->ascent, it->glyph, PX.main);
-        /* SCos keeps launcher names in the normal text colour on hover;
-         * title_text is for solid accent titlebars and was too dark here. */
+        else text_out(d, 12, yy + 4 + font->ascent, it->glyph, selected ? PX.title_text : PX.main);
+        /* A bright selection with dark text is actually distinguishable;
+         * either green text colour on the old green row was not. */
         clipped_text(d, 44, yy + 4 + font->ascent, it->name, it->app_idx >= 0 && app_is_pinned(it->app_idx) ? 205 : 248,
-                     PX.text);
+                     selected ? PX.title_text : PX.text);
         if (it->app_idx >= 0 && app_is_pinned(it->app_idx))
-            text_out(d, 262, yy + 4 + font->ascent, "PIN", PX.main);
+            text_out(d, 262, yy + 4 + font->ascent, "PIN", selected ? PX.title_text : PX.main);
         yy += 24;
     }
     if (!n) text_out(d, 14, yy + font->ascent, "(no core or installed app matches)", PX.title_off);
@@ -1679,7 +1685,7 @@ static void draw_menu(void)
     rect(d, 0, 0, w, h, PX.main);
     for (int i = 0; i < menu_n; i++) {
         int row_y = 3 + i * 24;
-        if (i == menu_hover) fill(d, 2, row_y, w - 4, 24, PX.bar_hi);
+        if (i == menu_hover) fill(d, 2, row_y, w - 4, 24, PX.main);
         int text_x = 10;
         if (menu_kind == MENU_PICKER) {
             /* Keep the real app icon with its window now that the main
@@ -2432,12 +2438,142 @@ static void apply_palette(void)
     PX.dark = alloc_rgb(0x000000);
 }
 
-/* Use the user's themed left_ptr on the desktop and WM chrome. The WM
- * never defined a cursor anywhere, so the root kept the bare X default
- * while applications showed their toolkit's themed cursor — two
- * different pointers on one desktop. libXcursor is loaded at runtime so
- * the WM keeps its libX11-only link line; without it we fall back to
- * the core font cursor. */
+/* Publish one cursor choice through all three X11 configuration paths.
+ * libXcursor/Qt 5 reads XCURSOR_THEME, Qt 6 commonly reads RESOURCE_MANAGER,
+ * and GTK reads the XSETTINGS manager's Gtk/CursorThemeName. Setting only
+ * the root cursor therefore left Breeze (or another theme) inside apps. */
+static int cursor_resource_line(const char *line, size_t len)
+{
+    static const char *const keys[] = { "Xcursor.theme", "Xcursor.size" };
+    while (len && (*line == ' ' || *line == '\t')) { line++; len--; }
+    for (unsigned int k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+        size_t n = strlen(keys[k]);
+        if (len >= n && !strncmp(line, keys[k], n) &&
+            (len == n || line[n] == ':' || line[n] == '=' ||
+             line[n] == ' ' || line[n] == '\t')) return 1;
+    }
+    return 0;
+}
+
+static void publish_xresource_cursor(const char *theme_name, int cursor_size)
+{
+    Atom type = None; int format = 0;
+    unsigned long n = 0, after = 0; unsigned char *data = NULL;
+    /* First obtain the exact byte count, then read the complete database so
+     * unrelated X resources survive and restarts do not append duplicates. */
+    if (XGetWindowProperty(dpy, root, XA_RESOURCE_MANAGER, 0, 0, False, XA_STRING,
+                           &type, &format, &n, &after, &data) != Success) return;
+    if (data) { XFree(data); data = NULL; }
+    if (after > 1024 * 1024) return;
+    if (after) {
+        Status status = XGetWindowProperty(dpy, root, XA_RESOURCE_MANAGER, 0, (long)((after + 3) / 4),
+                                           False, XA_STRING, &type, &format, &n, &after, &data);
+        if (status != Success) { if (data) XFree(data); return; }
+    }
+    size_t old_n = data && format == 8 ? n : 0;
+    size_t cap = old_n + 256;
+    char *out = calloc(1, cap);
+    if (!out) { if (data) XFree(data); return; }
+    size_t used = 0, pos = 0;
+    while (pos < old_n) {
+        size_t end = pos;
+        while (end < old_n && data[end] != '\n') end++;
+        if (!cursor_resource_line((const char *)data + pos, end - pos)) {
+            size_t count = end - pos;
+            memcpy(out + used, data + pos, count); used += count;
+            if (end < old_n) out[used++] = '\n';
+        }
+        pos = end < old_n ? end + 1 : end;
+    }
+    if (used && out[used - 1] != '\n') out[used++] = '\n';
+    int written = snprintf(out + used, cap - used, "Xcursor.theme: %s\nXcursor.size: %d\n",
+                           theme_name, cursor_size);
+    if (written > 0 && (size_t)written < cap - used) used += (size_t)written;
+    XChangeProperty(dpy, root, XA_RESOURCE_MANAGER, XA_STRING, 8,
+                    PropModeReplace, (unsigned char *)out, (int)used);
+    free(out);
+    if (data) XFree(data);
+}
+
+struct xsettings_buffer { unsigned char data[512]; size_t n; };
+static void xs_u16(struct xsettings_buffer *b, unsigned int v)
+{
+    b->data[b->n++] = (unsigned char)v; b->data[b->n++] = (unsigned char)(v >> 8);
+}
+static void xs_u32(struct xsettings_buffer *b, unsigned long v)
+{
+    for (int i = 0; i < 4; i++) b->data[b->n++] = (unsigned char)(v >> (i * 8));
+}
+static void xs_bytes(struct xsettings_buffer *b, const char *s, size_t n)
+{
+    memcpy(b->data + b->n, s, n); b->n += n;
+    while (b->n % 4) b->data[b->n++] = 0;
+}
+static void xs_name(struct xsettings_buffer *b, int type, const char *name)
+{
+    b->data[b->n++] = (unsigned char)type; b->data[b->n++] = 0;
+    xs_u16(b, (unsigned int)strlen(name));
+    xs_bytes(b, name, strlen(name));
+    xs_u32(b, 1);                 /* last-change serial */
+}
+static void xs_string(struct xsettings_buffer *b, const char *name, const char *value)
+{
+    xs_name(b, 1, name);
+    xs_u32(b, strlen(value)); xs_bytes(b, value, strlen(value));
+}
+static void xs_integer(struct xsettings_buffer *b, const char *name, int value)
+{
+    xs_name(b, 0, name); xs_u32(b, (unsigned long)(long)value);
+}
+
+static void publish_xsettings_cursor(const char *theme_name, int cursor_size)
+{
+    char selection_name[32];
+    snprintf(selection_name, sizeof(selection_name), "_XSETTINGS_S%d", scr_no);
+    Atom selection = XInternAtom(dpy, selection_name, False);
+    Atom property = XInternAtom(dpy, "_XSETTINGS_SETTINGS", False);
+    Atom manager = XInternAtom(dpy, "MANAGER", False);
+    if (!xsettings_win)
+        xsettings_win = XCreateSimpleWindow(dpy, root, -1, -1, 1, 1, 0, 0, 0);
+
+    struct xsettings_buffer b; memset(&b, 0, sizeof(b));
+    b.data[b.n++] = 0;            /* little-endian */
+    b.data[b.n++] = 0;
+    b.data[b.n++] = 0;
+    b.data[b.n++] = 0;
+    xs_u32(&b, 1);                /* settings serial */
+    xs_u32(&b, 2);                /* two records */
+    xs_string(&b, "Gtk/CursorThemeName", theme_name);
+    xs_integer(&b, "Gtk/CursorThemeSize", cursor_size);
+    XChangeProperty(dpy, xsettings_win, property, property, 8,
+                    PropModeReplace, b.data, (int)b.n);
+    XSetSelectionOwner(dpy, selection, xsettings_win, CurrentTime);
+
+    XEvent ev; memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage; ev.xclient.window = root;
+    ev.xclient.message_type = manager; ev.xclient.format = 32;
+    ev.xclient.data.l[0] = CurrentTime; ev.xclient.data.l[1] = (long)selection;
+    ev.xclient.data.l[2] = (long)xsettings_win;
+    XSendEvent(dpy, root, False, StructureNotifyMask, &ev);
+}
+
+static void publish_cursor_settings(void)
+{
+    const char *from_env = getenv("XCURSOR_THEME");
+    char theme_name[128];
+    snprintf(theme_name, sizeof(theme_name), "%s", from_env && *from_env ? from_env : "SCos");
+    theme_name[strcspn(theme_name, "\r\n")] = 0;
+    if (!theme_name[0]) snprintf(theme_name, sizeof(theme_name), "SCos");
+    const char *size_env = getenv("XCURSOR_SIZE");
+    int cursor_size = size_env ? (int)strtol(size_env, NULL, 10) : 24;
+    if (cursor_size < 12 || cursor_size > 96) cursor_size = 24;
+    publish_xresource_cursor(theme_name, cursor_size);
+    publish_xsettings_cursor(theme_name, cursor_size);
+}
+
+/* Use the same themed left_ptr on the desktop and WM chrome. libXcursor is
+ * loaded at runtime so the WM keeps its libX11-only link line; without it
+ * we fall back to the core font cursor. */
 typedef Cursor (*xcursor_load_fn)(Display *, const char *);
 static void setup_cursor(void)
 {
@@ -2821,7 +2957,7 @@ static void draw_tool(void)
     for (int i = 0; i < scos_theme_count; i++) {
         int x = 16 + i * 128, y = 62;
         int selected = !strcmp(cfg.theme, scos_themes[i].id);
-        fill(d, x, y, 120, 40, selected ? PX.bar_hi : PX.win_bg);
+        fill(d, x, y, 120, 40, selected ? PX.main : PX.win_bg);
         rect(d, x, y, 120, 40, PX.main);
         int tw = text_w(scos_themes[i].name);
         text_out(d, x + (120 - tw) / 2, y + 14 + font->ascent, scos_themes[i].name,
@@ -2832,8 +2968,9 @@ static void draw_tool(void)
     for (int field = 1; field <= 3; field++) {
         int y = 124 + (field - 1) * 44;
         text_out(d, 16, y + 9 + font->ascent, labels[field], PX.main);
-        fill(d, 100, y, 424, 30, PX.win_bg);
-        rect(d, 100, y, 424, 30, settings_field == field ? PX.title_text : PX.main);
+        int editing = settings_field == field;
+        fill(d, 100, y, 424, 30, editing ? PX.main : PX.win_bg);
+        rect(d, 100, y, 424, 30, editing ? PX.title_text : PX.main);
         char shown[1056];
         size_t cap = 0; char *target = settings_target(field, &cap); (void)cap;
         if (settings_field == field) snprintf(shown, sizeof(shown), "%s", settings_edit);
@@ -2843,10 +2980,10 @@ static void draw_tool(void)
             const char *e = detect_files_exec();
             snprintf(shown, sizeof(shown), "(auto: %s)", e ? e : "xdg-open");
         } else snprintf(shown, sizeof(shown), "%s", cfg.pins);
-        clipped_text(d, 108, y + 9 + font->ascent, shown, 390, PX.text);
-        if (settings_field == field && (time(NULL) % 2) == 0) {
+        clipped_text(d, 108, y + 9 + font->ascent, shown, 390, editing ? PX.title_text : PX.text);
+        if (editing && (time(NULL) % 2) == 0) {
             int cx = 108 + text_w(settings_edit);
-            if (cx < 518) fill(d, cx, y + 8, 2, 14, PX.main);
+            if (cx < 518) fill(d, cx, y + 8, 2, 14, PX.title_text);
         }
     }
 
@@ -2994,6 +3131,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < A_COUNT; i++) atoms[i] = XInternAtom(dpy, atom_names[i], False);
 
     apply_palette();
+    publish_cursor_settings();
     setup_cursor();
 
     /* _NET support handshake */

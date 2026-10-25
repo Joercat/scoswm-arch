@@ -1,3 +1,23 @@
+scoswm (0.5.3) unstable; urgency=medium
+
+  * Bundle four dedicated SCos application icon sets (Terminal, Files,
+    SysMon and Settings) at 16–256 px and use those names everywhere the
+    built-ins appear, including desktop pins and the Windows picker.
+  * Add a deterministic, dependency-free artwork generator and a complete
+    SCos Xcursor theme with common cursor aliases. Select it explicitly in
+    the session and publish matching X resources and GTK XSETTINGS from the
+    WM, covering Qt/GTK application interiors without another daemon.
+  * Make the right desktop rule two pixels wide so an inner column remains
+    visible even if the physical display clips its final column.
+  * Replace green-on-green selection states with bright accent backgrounds
+    and dark text across the launcher, menus, Settings and taskbar hover /
+    launch states. Highlight the active Settings text field consistently.
+  * Retain the pins-only taskbar and client-preserving withdrawal behavior;
+    expand graphical checks for all built-in images, cursor settings,
+    high-contrast selections, both right-edge columns and 20 reuse cycles.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 01:05:00 -0400
+
 scoswm (0.5.2) unstable; urgency=medium
 
   * Keep only permanent pinned shortcuts on the main taskbar. Running

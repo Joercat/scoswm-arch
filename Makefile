@@ -4,7 +4,7 @@
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.2"'
+CPPFLAGS += -DVERSION='"0.5.3"'
 LDLIBS    = -lX11 -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl
 PREFIX   ?= /usr
@@ -49,9 +49,15 @@ install: scoswm scos-terminal
 	install -Dm644 packaging/scoswm.desktop $(DESTDIR)$(PREFIX)/share/xsessions/scoswm.desktop
 	install -Dm644 packaging/scos-terminal.desktop $(DESTDIR)$(PREFIX)/share/applications/scos-terminal.desktop
 	for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256; do \
-		install -Dm644 packaging/icons/hicolor/$$size/apps/scos-terminal.png \
-			$(DESTDIR)$(PREFIX)/share/icons/hicolor/$$size/apps/scos-terminal.png; \
+		for name in scos-terminal scos-files scos-sysmon scos-settings; do \
+			install -Dm644 packaging/icons/hicolor/$$size/apps/$$name.png \
+				$(DESTDIR)$(PREFIX)/share/icons/hicolor/$$size/apps/$$name.png; \
+		done; \
 	done
+	install -d $(DESTDIR)$(PREFIX)/share/icons/SCos/cursors
+	cp -a packaging/icons/SCos/cursors/. $(DESTDIR)$(PREFIX)/share/icons/SCos/cursors/
+	install -m644 packaging/icons/SCos/index.theme packaging/icons/SCos/cursor.theme \
+		$(DESTDIR)$(PREFIX)/share/icons/SCos/
 	install -Dm644 packaging/scoswm.conf.example $(DESTDIR)$(PREFIX)/share/doc/scoswm/scoswm.conf.example
 	install -Dm644 README.md $(DESTDIR)$(PREFIX)/share/doc/scoswm/README.md
 

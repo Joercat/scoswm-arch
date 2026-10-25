@@ -4,3 +4,4 @@
 /test_terminal
 /test_pty
 /*.deb
+__pycache__/
