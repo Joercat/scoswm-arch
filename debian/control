@@ -14,7 +14,7 @@ Package: scoswm
 Architecture: any
 Depends: ${shlibs:Depends},
  ${misc:Depends},
- libxcomposite6,
+ libxcomposite1,
  bash,
  xfonts-base
 Recommends: xserver-xorg-core,

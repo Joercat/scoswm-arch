@@ -71,7 +71,24 @@ grep -qxF 'export XCURSOR_SIZE=${SCOS_CURSOR_SIZE:-24}' "$tmp/usr/bin/scoswm-ses
     echo "FAIL: session does not select a consistent cursor size"; exit 1;
 }
 
+# Composite is deliberately dlopened, so shlibdeps cannot catch a wrong
+# SONAME. Keep the loader and Debian package name aligned explicitly.
+grep -qF 'dlopen("libXcomposite.so.1"' "$root/src/scoswm.c" || {
+    echo "FAIL: Composite loader does not use libXcomposite.so.1"; exit 1;
+}
+grep -qxF ' libxcomposite1,' "$root/debian/control" || {
+    echo "FAIL: Debian control does not depend on libxcomposite1"; exit 1;
+}
+grep -qF 'Depends: $shlibs, libxcomposite1,' "$root/packaging/build-deb.sh" || {
+    echo "FAIL: quick Debian package has the wrong Composite dependency"; exit 1;
+}
+if grep -nE 'libxcomposite6|libXcomposite\.so\.6' \
+        "$root/src/scoswm.c" "$root/debian/control" "$root/packaging/build-deb.sh"; then
+    echo "FAIL: obsolete Composite SONAME/package remains"; exit 1;
+fi
+
 echo "SDDM session check: SCosWM will be listed and launchable ($entry)"
 echo "Standalone application check: SCos Terminal and SCos Files are available to other desktops"
 echo "Application identity check: four built-in icon sets and both KDE window classes installed"
 echo "Cursor check: SCos Xcursor theme, aliases and session selection installed"
+echo "Composite dependency check: libXcomposite.so.1 and Debian libxcomposite1 aligned"

@@ -2475,7 +2475,7 @@ static int overview_composite_available(void)
 {
     if (composite_state) return composite_state > 0;
     composite_state = -1;
-    void *library = dlopen("libXcomposite.so.6", RTLD_LAZY | RTLD_LOCAL);
+    void *library = dlopen("libXcomposite.so.1", RTLD_LAZY | RTLD_LOCAL);
     if (!library) return 0;
     composite_query_extension = (Bool (*)(Display *, int *, int *))
         dlsym(library, "XCompositeQueryExtension");

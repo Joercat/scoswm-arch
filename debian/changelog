@@ -1,3 +1,12 @@
+scoswm (0.5.9) unstable; urgency=medium
+
+  * Correct the on-demand Composite loader to libXcomposite.so.1 and the
+    Debian runtime dependency to libxcomposite1. The 0.5.8 package
+    incorrectly named the nonexistent libxcomposite6 dependency, which
+    prevented installation even though the WM has a direct-capture fallback.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 23:52:41 -0400
+
 scoswm (0.5.8) unstable; urgency=medium
 
   * Reduce the visible right desktop rule to two pixels while retaining its

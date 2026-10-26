@@ -54,7 +54,7 @@ The hard shared-library runtime dependencies are `libX11`, `libXext`
 (used for the click-through SHAPE input region on the desktop rule) and
 zlib (used to decode standard PNG app icons) — on Debian those are the
 `libx11-6`/`libxext6`/`zlib1g` packages, pulled in automatically by the `.deb`.
-The packages also depend on `libXcomposite` (`libxcomposite6` on Debian)
+The packages also depend on `libXcomposite` (`libxcomposite1` on Debian)
 for reliable overview thumbnails of obscured application windows. It is
 loaded on demand; there is still no compositor, and a manual installation
 without it falls back to direct X11 captures. SVG icon support is optional
