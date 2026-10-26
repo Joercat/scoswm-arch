@@ -1,3 +1,23 @@
+scoswm (0.5.6) unstable; urgency=medium
+
+  * Split shortcut activation into focus-or-launch and always-launch-new
+    paths. Double-clicking a desktop or taskbar shortcut now starts another
+    real application instance even when one is running; a single click
+    activates the most recently active matching window without spawning.
+  * Preserve no-motion drag/drop handling, delayed single-launch behavior for
+    unopened taskbar pins, desktop selection and surface-independent context
+    menus. Receive root button releases so fast desktop clicks cannot leave
+    a shortcut stuck in its drag state.
+  * Remove all reported normal-build format-truncation diagnostics in Wi-Fi
+    status/adapter rows and standalone Files titles/status messages, plus
+    optimization-dependent SysMon and interface-name sites, with bounded
+    display formatting rather than warning suppression.
+  * Add real-X11-client regressions for desktop/taskbar multi-instance
+    launching and most-recent-window restore, while retaining all previous
+    scrolling, Files, terminal, withdrawal/reuse and Wi-Fi checks.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 21:47:35 -0400
+
 scoswm (0.5.5) unstable; urgency=medium
 
   * Bundle the original-style scos-files X11/POSIX file manager and make it

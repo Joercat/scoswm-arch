@@ -568,6 +568,11 @@ fi
             server.injectButton(1, true);
             await delay(180); // WM must process the press and pointer grab before motion
         };
+        const clickShortcut = async (x, y) => {
+            await beginDrag(x, y);
+            server.injectButton(1, false);
+            await delay(40);
+        };
 
         // Click-hold-drag on empty wallpaper paints an actual rubber band,
         // and releasing it leaves a selection only for intersected icons.
@@ -797,6 +802,73 @@ fi
         await waitFor(() => !wifiPanel.mapped, 'Wi-Fi panel close');
         assert.equal(wm.exitCode, null, `WM exited during standalone Files/Wi-Fi checks: ${wmLog}`);
 
+        // A non-core .desktop pin gives both surfaces the same real process
+        // and WM_CLASS. Double-click must always spawn, while a single click
+        // must restore/activate the most recently active matching client.
+        fs.writeFileSync(path.join(stressApps, 'thunar.desktop'),
+            `[Desktop Entry]\nType=Application\nName=Multi Instance Test\nExec=${path.join(repo, 'test_file_client')}\nIcon=scos-files\n`);
+        fs.writeFileSync(configFile,
+            `bar_height=28\npins=thunar\ndesktop_pins=thunar\ndesktop_slots=0\nfiles=${path.join(repo, 'test_file_client')}\n`);
+        wm.kill('SIGKILL');
+        await waitFor(() => wm.exitCode !== null || wm.signalCode !== null,
+            'WM restart for multi-instance shortcuts');
+        await delay(150);
+        wm = spawn(path.join(repo, 'scoswm'), [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        wm.stdout.on('data', b => wmLog += b);
+        wm.stderr.on('data', b => wmLog += b);
+        await waitFor(() => server.root.children.find(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
+            'multi-instance taskbar');
+        const multiClients = () => [...server.resources.values()].filter(res =>
+            res.type === 'window' && res.parent && res.parent.id !== 1 &&
+            property(server, res, 'WM_CLASS') === 'thunar' &&
+            property(server, res, 'WM_NAME') === 'Home - File Manager');
+        const activeWindow = () => {
+            const atom = server.atomsByName.get('_NET_ACTIVE_WINDOW');
+            const prop = atom && server.root.properties.get(atom);
+            return prop && prop.data.length >= 4 ? prop.data.readUInt32LE(0) : 0;
+        };
+
+        await clickShortcut(56, 40); // desktop, first half of a double-click
+        await delay(70);
+        await clickShortcut(56, 40);
+        await waitFor(() => multiClients().length === 1, 'desktop double-click initial instance');
+        await delay(450); // outside the double-click interval on a real X server
+        await clickShortcut(56, 40);
+        await delay(70);
+        await clickShortcut(56, 40);
+        await waitFor(() => multiClients().length === 2, 'desktop double-click new instance while running');
+
+        await clickShortcut(185, 586); // taskbar double-click with two instances running
+        await delay(70);
+        await clickShortcut(185, 586);
+        await waitFor(() => multiClients().length === 3, 'taskbar double-click new instance while running');
+        const instances = multiClients();
+        const oldest = instances[0], middle = instances[1], newest = instances[2];
+        await waitFor(() => activeWindow() === newest.id, 'new taskbar instance focused');
+
+        // Minimise newest to oldest. Each minimisation focuses the next
+        // visible instance, so once all three are minimised the oldest is the
+        // most recently active matching window. Each single-click surface
+        // must restore that window, not spawn or choose by creation order.
+        for (const [client, label] of [[newest, 'newest'], [middle, 'middle'], [oldest, 'oldest']]) {
+            click(client.parent.absX() + client.parent.width - 57, client.parent.absY() + 10);
+            await waitFor(() => !client.mapped, `${label} instance minimised before desktop single-click`);
+        }
+        await clickShortcut(56, 40);
+        await waitFor(() => oldest.mapped && activeWindow() === oldest.id,
+            'desktop single-click restores most recent matching window');
+        assert.equal(multiClients().length, 3, 'desktop single-click spawned an extra instance');
+
+        click(oldest.parent.absX() + oldest.parent.width - 57, oldest.parent.absY() + 10);
+        await waitFor(() => !oldest.mapped, 'most recent instance minimised before taskbar single-click');
+        await clickShortcut(185, 586);
+        await waitFor(() => oldest.mapped && activeWindow() === oldest.id,
+            'taskbar single-click restores most recent matching window');
+        assert.equal(multiClients().length, 3, 'taskbar single-click spawned an extra instance');
+        for (const client of multiClients()) X.DestroyWindow(client.id);
+        await waitFor(() => multiClients().length === 0, 'multi-instance client cleanup');
+        assert.equal(wm.exitCode, null, `WM exited during multi-instance shortcut checks: ${wmLog}`);
+
         assert.deepEqual(directDraws, [], `visible-window drawing bypassed backing pixmaps: ${JSON.stringify(directDraws)}`);
         assert.deepEqual(handlerErrors, [], `X server handler errors: ${handlerErrors.map(x => String(x.err)).join(', ')}`);
         console.log('graphical WM: dedicated right-rule surface/fallback columns, centered labels, 28px taskbar bounds and upward power gap OK');
@@ -814,6 +886,7 @@ fi
         console.log('graphical terminal: real Bash/arrows use incremental rows; long-title Close remains visible/clickable OK');
         console.log('graphical standalone Files: real navigation, New Folder, rename and KDE-class application lifetime OK');
         console.log('graphical Wi-Fi: nonblocking scan, scrolling and second-ifname connect arguments OK');
+        console.log('graphical shortcuts: desktop/taskbar double-click multi-instance and single-click last-window activation OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);

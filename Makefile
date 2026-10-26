@@ -4,7 +4,7 @@
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.5"'
+CPPFLAGS += -DVERSION='"0.5.6"'
 LDLIBS    = -lX11 -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl
 PREFIX   ?= /usr

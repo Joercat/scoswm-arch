@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 #ifndef VERSION
-#define VERSION "0.5.5"
+#define VERSION "0.5.6"
 #endif
 #define TB_Y 8
 #define TB_H 26
@@ -135,7 +135,7 @@ static void update_title(void)
     const char *base = strrchr(cwd, '/');
     base = base && base[1] ? base + 1 : cwd;
     char title[512], latin[512];
-    snprintf(title, sizeof(title), "SCos Files - %s", base);
+    snprintf(title, sizeof(title), "SCos Files - %.498s", base);
     utf8_to_latin1(title, latin, sizeof(latin));
     XStoreName(dpy, win, latin);
     XChangeProperty(dpy, win, a_net_name, a_utf8, 8, PropModeReplace,
@@ -203,7 +203,7 @@ static void spawn_document(const char *path)
         _exit(0);
     }
     if (pid < 0) snprintf(status_text, sizeof(status_text), "Cannot launch document opener: %s", strerror(errno));
-    else snprintf(status_text, sizeof(status_text), "Opening %s", path);
+    else snprintf(status_text, sizeof(status_text), "Opening %.503s", path);
     need_redraw = 1;
 }
 
@@ -233,10 +233,10 @@ static void dialog_accept(void)
     int ok = 1;
     if (dialog_kind == DIALOG_NEW_FOLDER) {
         ok = files_create_folder(cwd, dialog_input, error, sizeof(error));
-        if (ok) { snprintf(status_text, sizeof(status_text), "Created %s", dialog_input); refresh_directory(); }
+        if (ok) { snprintf(status_text, sizeof(status_text), "Created %.503s", dialog_input); refresh_directory(); }
     } else if (dialog_kind == DIALOG_RENAME) {
         ok = files_rename_entry(cwd, dialog_target, dialog_input, error, sizeof(error));
-        if (ok) { snprintf(status_text, sizeof(status_text), "Renamed %s to %s", dialog_target, dialog_input); refresh_directory(); }
+        if (ok) { snprintf(status_text, sizeof(status_text), "Renamed %.240s to %.240s", dialog_target, dialog_input); refresh_directory(); }
     } else if (dialog_kind == DIALOG_PATH) {
         ok = load_directory(dialog_input, 1);
     }

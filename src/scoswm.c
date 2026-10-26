@@ -53,7 +53,7 @@
 #include "wifi.h"
 
 #ifndef VERSION
-#define VERSION "0.5.5"
+#define VERSION "0.5.6"
 #endif
 
 #define TITLE_H 26
@@ -617,6 +617,26 @@ static struct {
     int current_x, current_y, target_slot, target_order;
 } drag;
 
+/* Shortcut clicks are completed on release, after the shared drag detector
+ * has rejected motion.  A single click activates an existing window; a
+ * second click within the X11 double-click interval starts a new instance.
+ * An unopened taskbar pin still launches on a single click, but that launch
+ * waits briefly so a double-click does not accidentally start two copies. */
+static struct {
+    int source, index, x, y;
+    Time time;
+} shortcut_click = { .source = -1, .index = -1 };
+static struct pin taskbar_pending_pin;
+static int taskbar_launch_pending;
+static long long taskbar_pending_since;
+
+static long long monotonic_msec(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
 static void grab_drag_pointer(struct client *c, Time t)
 {
     /* Do not rely on the client's implicit button grab: it can keep
@@ -988,20 +1008,66 @@ static void launch_exec_item(const struct launch_item *it)
     else spawn(it->command);
 }
 
-static void launch_pin_value(const struct pin *p)
+static int command_matches_client(const char *command, const struct client *c)
+{
+    if (!command || !c) return 0;
+    while (*command == ' ' || *command == '\t') command++;
+    char executable[160];
+    size_t n = 0;
+    while (command[n] && command[n] != ' ' && command[n] != '\t' && n + 1 < sizeof(executable)) {
+        executable[n] = command[n]; n++;
+    }
+    executable[n] = 0;
+    if ((executable[0] == '\'' || executable[0] == '"') && n >= 2 &&
+        executable[n - 1] == executable[0]) {
+        executable[n - 1] = 0;
+        memmove(executable, executable + 1, n - 1);
+    }
+    char *base = strrchr(executable, '/');
+    base = base ? base + 1 : executable;
+    if (strlen(base) < 3 || !strcmp(base, "env") || !strcmp(base, "sh") ||
+        !strcmp(base, "bash") || !strcmp(base, "flatpak") || !strcmp(base, "snap") ||
+        !strcmp(base, "gtk-launch") || !strcmp(base, "xdg-open")) return 0;
+    return ci_contains(c->wclass, base);
+}
+
+static int pin_matches_client(const struct pin *p, const struct client *c)
+{
+    if (!p || !c || p->action == CORE_SYSMON || p->action == CORE_SETTINGS) return 0;
+    if (p->match[0] && ci_contains(c->wclass, p->match)) return 1;
+    if (p->action == CORE_TERMINAL) {
+        if (ci_contains(c->wclass, "scos-terminal")) return 1;
+        return command_matches_client(cfg.terminal[0] ? cfg.terminal : detect_terminal(), c);
+    }
+    if (p->action == CORE_FILES) {
+        if (ci_contains(c->wclass, "scos-files")) return 1;
+        return command_matches_client(cfg.files[0] ? cfg.files : detect_files_exec(), c);
+    }
+    return command_matches_client(p->command, c);
+}
+
+static struct client *pin_last_client(const struct pin *p)
+{
+    struct client *match = NULL;
+    /* activate() keeps this list in most-recently-active order. */
+    for (int k = 0; k < nclients; k++)
+        if (pin_matches_client(p, clients[k])) match = clients[k];
+    return match;
+}
+
+static void launch_pin_new(const struct pin *p)
 {
     if (!p) return;
-    if (p->action != CORE_NONE) { run_core_action(p->action); return; }
-    struct client *match = NULL;
-    for (int k = 0; k < nclients; k++)
-        if (p->match[0] && strstr(clients[k]->wclass, p->match)) match = clients[k];
-    if (match) activate(match, 1);
+    if (p->action != CORE_NONE) run_core_action(p->action);
     else spawn(p->command);
 }
 
-static void launch_desktop_pin(int i)
+static void launch_pin_value(const struct pin *p)
 {
-    if (i >= 0 && i < ndesk_pins) launch_pin_value(&desk_pins[i]);
+    if (!p) return;
+    struct client *match = pin_last_client(p);
+    if (match) activate(match, 1);
+    else launch_pin_new(p);
 }
 
 static int taskbar_insert(const struct pin *p, int order)
@@ -1113,6 +1179,11 @@ static int shortcut_bar_order(int x)
 
 static void shortcut_drag_begin(int source, int index, const XButtonEvent *e, int icon_x, int icon_y)
 {
+    if (taskbar_launch_pending &&
+        (source != shortcut_click.source || index != shortcut_click.index)) {
+        launch_pin_new(&taskbar_pending_pin);
+        taskbar_launch_pending = 0;
+    }
     drag.kind = 4; drag.c = NULL;
     drag.pin_source = source; drag.pin_index = index;
     drag.start_x = drag.current_x = e->x_root;
@@ -1151,7 +1222,7 @@ static void shortcut_drag_motion(const XMotionEvent *e)
     }
 }
 
-static void shortcut_drag_finish(void)
+static void shortcut_drag_finish(const XButtonEvent *e)
 {
     int source = drag.pin_source, index = drag.pin_index, moved = drag.moved;
     int target_slot = drag.target_slot, target_order = drag.target_order;
@@ -1163,12 +1234,37 @@ static void shortcut_drag_finish(void)
     XUngrabPointer(dpy, CurrentTime);
     bar_press = -1;
     if (!moved) {
+        int dbl = shortcut_click.source == source && shortcut_click.index == index &&
+                  (unsigned int)(e->time - shortcut_click.time) < 400 &&
+                  abs(e->x_root - shortcut_click.x) < 6 &&
+                  abs(e->y_root - shortcut_click.y) < 6;
         if (source == SHORTCUT_BAR) {
             bar_flash_pin = index; bar_flash_until = time(NULL) + 2;
-            draw_bar(); launch_pin_value(&p); draw_bar();
+            draw_bar();
         } else draw_desktop();
+        if (dbl) {
+            shortcut_click.source = shortcut_click.index = -1;
+            taskbar_launch_pending = 0;
+            launch_pin_new(&p);
+        } else {
+            shortcut_click.source = source; shortcut_click.index = index;
+            shortcut_click.x = e->x_root; shortcut_click.y = e->y_root;
+            shortcut_click.time = e->time;
+            struct client *match = pin_last_client(&p);
+            if (match) {
+                taskbar_launch_pending = 0;
+                activate(match, 1);
+            } else if (source == SHORTCUT_BAR) {
+                taskbar_pending_pin = p;
+                taskbar_pending_since = monotonic_msec();
+                taskbar_launch_pending = 1;
+            }
+        }
+        if (source == SHORTCUT_BAR) draw_bar();
         return;
     }
+    shortcut_click.source = shortcut_click.index = -1;
+    if (source == SHORTCUT_BAR) taskbar_launch_pending = 0;
     int changed = 0;
     if (target_order >= 0) {
         if (source == SHORTCUT_BAR) changed = taskbar_insert(&p, target_order) >= 0;
@@ -1983,6 +2079,7 @@ static void menu_open(int kind, int x, int y, Window target)
     XMapWindow(dpy, menu_win);
     XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     draw_menu();
+    menu_bar_release = 1;
 }
 
 static void shortcut_menu_item(const char *label, int action)
@@ -2028,6 +2125,7 @@ static void menu_open_shortcut(const struct pin *p, int source, int x, int y)
     XMapWindow(dpy, menu_win);
     XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     draw_menu();
+    menu_bar_release = 1;
 }
 
 static Pixmap menu_pm = None;
@@ -2217,10 +2315,9 @@ static void on_button(XButtonEvent *e)
         draw_desktop();
     }
 
-    /* Taskbar menus open on press. Do not let the release from that very
-     * same click immediately dismiss the menu before its next click. */
-    if (menu_kind != MENU_NONE && menu_bar_release &&
-        e->type == ButtonRelease && w == bar_win) {
+    /* Menus open on press. Do not let the release from that very same click
+     * immediately dismiss the menu or activate the row under the pointer. */
+    if (menu_kind != MENU_NONE && menu_bar_release && e->type == ButtonRelease) {
         menu_bar_release = 0;
         return;
     }
@@ -2267,7 +2364,7 @@ static void on_button(XButtonEvent *e)
      * repaints (suppressed mid-drag) never resumed, so closed windows
      * left ghost frames on the desktop. */
     if (e->type == ButtonRelease && drag.kind) {
-        if (drag.kind == 4) { shortcut_drag_finish(); return; }
+        if (drag.kind == 4) { shortcut_drag_finish(e); return; }
         XUngrabPointer(dpy, CurrentTime);
         if (drag.kind == 3) {
             drag.band_x = x; drag.band_y = y;
@@ -2448,21 +2545,13 @@ static void on_button(XButtonEvent *e)
             if (x >= ix && x < ix + 80 && y >= iy && y < iy + 88) hit = i;
         }
         if (hit >= 0) {
-            int dbl = (e->button == last_click.button &&
-                       (long)(e->time - last_click.t) < 400 &&
-                       x - last_click.x < 6 && x - last_click.x > -6 &&
-                       y - last_click.y < 6 && y - last_click.y > -6 &&
-                       hit == last_click.icon);
-            last_click.button = e->button; last_click.t = e->time;
-            last_click.x = x; last_click.y = y; last_click.icon = hit;
             desk_sel_mask = 1ul << hit;
             draw_desktop();
-            if (dbl) { launch_desktop_pin(hit); return; }
             int icon_x, icon_y; icon_rect(hit, &icon_x, &icon_y);
             shortcut_drag_begin(SHORTCUT_DESKTOP, hit, e, icon_x, icon_y);
             return;
         }
-        last_click.icon = -1;
+        shortcut_click.source = shortcut_click.index = -1;
         /* rubber band on empty desktop: clear any icon selection at once,
          * otherwise the old highlight stayed painted until button release
          * and looked like clicking off an icon never un-highlighted it */
@@ -3282,7 +3371,7 @@ static void detect_gpu_info(void)
             return;
         }
         if (!sysmon_state.gpu[0])
-            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU driver: %.230s (card%d)", driver, card);
+            snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU driver: %.225s (card%d)", driver, card);
     }
     if (sysmon_state.gpu[0]) return;
     snprintf(sysmon_state.gpu, sizeof(sysmon_state.gpu), "GPU: no DRM driver exposed in /sys");
@@ -3306,7 +3395,10 @@ static void detect_temperature(void)
         if (!read_small_file(path, value, sizeof(value))) continue;
         long milli = strtol(value, NULL, 10);
         if (milli > 0) {
-            snprintf(sysmon_state.temperature, sizeof(sysmon_state.temperature), "%s: %.1f C", name, milli / 1000.0);
+            char celsius[64];
+            snprintf(celsius, sizeof(celsius), "%ld.%d", milli / 1000, (int)((milli % 1000) / 100));
+            snprintf(sysmon_state.temperature, sizeof(sysmon_state.temperature),
+                     "%.70s: %.21s C", name, celsius);
             break;
         }
     }
@@ -3366,12 +3458,12 @@ static void wifi_job_finish(void)
                      wifi_network_count);
         } else {
             char *nl = strpbrk(wifi_job.output, "\r\n"); if (nl) *nl = 0;
-            snprintf(wifi_status, sizeof(wifi_status), "%s", wifi_job.output[0] ?
-                     wifi_job.output : "No Wi-Fi networks reported");
+snprintf(wifi_status, sizeof(wifi_status), "%.191s", wifi_job.output[0] ?
+                 wifi_job.output : "No Wi-Fi networks reported");
         }
     } else if (wifi_job.kind == 2) {
         char *nl = strpbrk(wifi_job.output, "\r\n"); if (nl) *nl = 0;
-        snprintf(wifi_status, sizeof(wifi_status), "%s", wifi_job.output[0] ?
+        snprintf(wifi_status, sizeof(wifi_status), "%.191s", wifi_job.output[0] ?
                  wifi_job.output : "Connection request finished");
         wifi_refresh_local();
     }
@@ -3557,7 +3649,7 @@ static void draw_tool(void)
             char signal[48] = "";
             if (adapter->signal_dbm > -1000) snprintf(signal, sizeof(signal), " %d dBm", adapter->signal_dbm);
             else if (adapter->quality >= 0) snprintf(signal, sizeof(signal), " q%d", adapter->quality);
-            snprintf(line, sizeof(line), "%s  %s%s%s%s", adapter->name,
+            snprintf(line, sizeof(line), "%.15s  %.128s%.47s%s%.63s", adapter->name,
                      adapter->connected ? adapter->ssid : (adapter->enabled ? "not connected" : "disabled"),
                      signal, adapter->address[0] ? "  " : "", adapter->address);
             clipped_text(d, 16, 62 + i * 20, line, 508,
@@ -3887,7 +3979,7 @@ int main(int argc, char **argv)
     {
         XSetErrorHandler(wm_conflict_error);
         XSelectInput(dpy, root, SubstructureRedirectMask | SubstructureNotifyMask |
-                     StructureNotifyMask | ButtonPressMask | PropertyChangeMask |
+                     StructureNotifyMask | ButtonPressMask | ButtonReleaseMask | PropertyChangeMask |
                      PointerMotionMask | LeaveWindowMask | ExposureMask);
         XSync(dpy, False);
         XSetErrorHandler(xerror);
@@ -4152,9 +4244,13 @@ int main(int argc, char **argv)
             FD_SET(wifi_job.fd, &rf);
             if (wifi_job.fd > maxfd) maxfd = wifi_job.fd;
         }
-        struct timeval tv = { 0, 250000 };
+        struct timeval tv = { 0, taskbar_launch_pending ? 50000 : 250000 };
         int selected = select(maxfd + 1, &rf, NULL, NULL, &tv);
         if (selected > 0 && wifi_job.fd >= 0 && FD_ISSET(wifi_job.fd, &rf)) wifi_job_read();
+        if (taskbar_launch_pending && monotonic_msec() - taskbar_pending_since >= 400) {
+            taskbar_launch_pending = 0;
+            launch_pin_new(&taskbar_pending_pin);
+        }
         time_t now = time(NULL);
         if (now != last_clock) {
             last_clock = now; draw_bar();

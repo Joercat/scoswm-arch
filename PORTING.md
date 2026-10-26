@@ -72,8 +72,10 @@ ISO10646 font when available for its Unicode cell grid.
   image sets, Qt/GTK cursor publication and inheritance, pointer-driven
   terminal resize/move, changed-row Bash/arrow repainting and long-tab Close
   clipping, real standalone Files navigation/create/rename, delayed fake-
-  `nmcli` multi-device interaction, and mouse-opened Settings with live
-  persisted taskbar scaling. The right rule also has a dedicated WM-owned
+  `nmcli` multi-device interaction, real-client desktop/taskbar double-click
+  multi-instance launching and single-click most-recent-window activation,
+  and mouse-opened Settings with live persisted taskbar scaling. The right
+  rule also has a dedicated WM-owned
   override-redirect surface; headless geometry is not presented as proof of
   physical-display visibility.
 - Earlier development runs also verified adoption, maximise/restore,

@@ -109,7 +109,7 @@ int wifi_scan_adapters(struct wifi_adapter *out, int maximum)
         while ((entry = readdir(sys)) != NULL) {
             if (entry->d_name[0] == '.' || strlen(entry->d_name) >= WIFI_IFNAME_MAX) continue;
             struct iwreq req; memset(&req, 0, sizeof(req));
-            snprintf(req.ifr_name, sizeof(req.ifr_name), "%s", entry->d_name);
+            snprintf(req.ifr_name, sizeof(req.ifr_name), "%.15s", entry->d_name);
             if (ioctl(fd, SIOCGIWNAME, &req) != 0) continue;
             int index = adapter_add(out, count, maximum, entry->d_name);
             if (index >= 0 && index == count) count++;

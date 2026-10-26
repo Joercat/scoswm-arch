@@ -131,7 +131,7 @@ startx
 | Action | How |
 |---|---|
 | Open the app launcher | Click the 2×2 grid button, or `Super+D`. The normal view shows only core/pinned apps; typing searches installed apps too. Choose **All installed apps...** to browse without typing; the mouse wheel scrolls the list |
-| Launch pinned apps | Taskbar pin squares, or double-click desktop icons |
+| Launch or revisit pinned apps | Single-click a taskbar or desktop shortcut to activate its most recently active running window (a taskbar click launches the app if none is running). Double-click either surface to start another instance, even when that app is already open |
 | Add/move/remove apps | Right-click an app in the launcher, a taskbar pin, or a desktop icon for **Launch**, surface-specific **Add**/**Move**, and **Remove** actions. Taskbar `pins` and `desktop_pins` are independent; removing one surface's shortcut does not remove the other |
 | Arrange shortcuts | Drag a desktop icon to snap it to the nearest grid slot. Drag taskbar icons to reorder them, or drag in either direction between the desktop and taskbar to move a shortcut. The snap outline/insertion marker previews the drop and the layout is saved |
 | Select desktop icons | Click an icon, or click-hold-drag empty desktop to paint a rubber-band selection rectangle. Right-click empty desktop for the normal desktop menu |
@@ -337,7 +337,10 @@ navigation, creation and rename. A delayed fake `nmcli` checks nonblocking
 Wi-Fi scans, scrolling and per-interface connect arguments. It also exercises persistent desktop snapping,
 bidirectional shortcut drag/drop and previews, independent context-menu
 add/remove actions, visible rubber-band selection, 24/32/48 px icons and
-grid toggling. Crash-path regressions include 12 external Files launches
+grid toggling. Real-client shortcut checks cover double-click multi-instance
+launching on both surfaces and single-click activation of the most recently
+active matching window without spawning another process. Crash-path
+regressions include 12 external Files launches
 with live multi-size client-icon changes and 600 wheel events through 250
 installed apps with separate PNG cache entries.
 
