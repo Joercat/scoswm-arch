@@ -44,7 +44,7 @@ Section: x11
 Priority: optional
 Architecture: $arch
 Maintainer: Joe <167563398+Joercat@users.noreply.github.com>
-Depends: $shlibs, bash, xfonts-base
+Depends: $shlibs, libxcomposite6, bash, xfonts-base
 Recommends: xserver-xorg-core, xinit, xdg-utils, dbus-x11, libxcursor1, libgdk-pixbuf-2.0-0, librsvg2-common
 Suggests: sddm, networkmanager, slock | i3lock | suckless-tools
 Installed-Size: $installed_size

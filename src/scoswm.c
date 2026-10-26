@@ -26,6 +26,7 @@
 #include <X11/Xatom.h>
 #include <X11/cursorfont.h>
 #include <X11/keysym.h>
+#include <X11/XF86keysym.h>
 #include <X11/extensions/shape.h>
 
 #include <dlfcn.h>
@@ -63,7 +64,7 @@
 #define DESK_COL_W 88
 #define DESK_ROW_H 96
 #define DESK_EDGE_GAP 16          /* keep the right rule off physical overscan */
-#define DESK_RULE_W 6
+#define DESK_RULE_W 2
 #define BAR_DATE_W 48
 #define BAR_CLOCK_W 76
 #define BAR_SECTION_GAP 8
@@ -74,6 +75,7 @@
 static Display *dpy;
 static int scr_no;
 static Window root, wmcheck, xsettings_win, bar_win, edge_win, launch_win, menu_win, tool_win, anim_win, overview_win;
+static int edge_input_passthrough;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -488,11 +490,18 @@ static void launcher_toggle(int open);
 static void wm_notify_no_windows(void);
 static void menu_close(void);
 enum { TOOL_NONE, TOOL_SETTINGS, TOOL_SYSMON, TOOL_WIFI };
+enum { TOOL_HOVER_NONE, TOOL_HOVER_CLOSE, TOOL_HOVER_WIFI_PASSWORD,
+       TOOL_HOVER_WIFI_CONNECT, TOOL_HOVER_WIFI_SCAN,
+       TOOL_HOVER_BAR_DEC, TOOL_HOVER_BAR_INC, TOOL_HOVER_ICON_DEC,
+       TOOL_HOVER_ICON_INC, TOOL_HOVER_GRID,
+       TOOL_HOVER_NETWORK = 100, TOOL_HOVER_THEME = 200, TOOL_HOVER_FIELD = 300 };
 static int tool_kind;
+static int tool_hover;
 static int tool_release_pending;
 static void tool_open(int kind);
 static void tool_close(void);
 static void draw_tool(void);
+static int tool_hover_at(int x, int y);
 static int tool_key(XKeyEvent *e);
 static int tool_button(XButtonEvent *e);
 static void spawn_files_home(void);
@@ -540,6 +549,7 @@ static void raise_client_frame(struct client *c)
 static void activate(struct client *c, int raise)
 {
     if (!c) return;
+    if (overview_active) overview_close();
     if (c->minimized) {
         c->minimized = 0;
         animate_restore(c);
@@ -1687,6 +1697,21 @@ static int desktop_right_rule(void)
     return x < 1 ? 1 : x;
 }
 
+static void paint_wallpaper(Drawable d, int width, int height)
+{
+    for (int y = 0; y < height; y++) {
+        unsigned int rgb = color_blend_rgb(theme.bg_top, theme.bg_bot,
+                                           height > 1 ? y * 255 / (height - 1) : 0);
+        XSetForeground(dpy, gc, alloc_rgb(rgb));
+        XFillRectangle(dpy, d, gc, 0, y, width, 1);
+    }
+    if (cfg.desktop_grid) {
+        XSetForeground(dpy, gc, PX.grid);
+        for (int x = 0; x < width; x += 64) XDrawLine(dpy, d, gc, x, 0, x, height);
+        for (int y = 0; y < height; y += 64) XDrawLine(dpy, d, gc, 0, y, width, y);
+    }
+}
+
 static void paint_desktop(Drawable d)
 {
     /* Paint everything into the supplied drawable. When draw_desktop()
@@ -1694,18 +1719,8 @@ static void paint_desktop(Drawable d)
      * land in that pixmap: painting any layer straight onto the root is
      * then immediately covered by the pixmap copy, which both hid the
      * grid and made every repaint visibly flicker. */
-    for (int y = 0; y < screen_h; y++) {
-        unsigned int rgb = color_blend_rgb(theme.bg_top, theme.bg_bot,
-                                           screen_h > 1 ? y * 255 / (screen_h - 1) : 0);
-        XSetForeground(dpy, gc, alloc_rgb(rgb));
-        XFillRectangle(dpy, d, gc, 0, y, screen_w, 1);
-    }
-    if (cfg.desktop_grid) {
-        XSetForeground(dpy, gc, PX.grid);
-        for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
-        for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
-    }
-    /* Keep a wallpaper fallback beneath the dedicated six-pixel edge
+    paint_wallpaper(d, screen_w, screen_h);
+    /* Keep a wallpaper fallback beneath the dedicated two-pixel edge
      * surface. The click-through surface keeps the rule above app frames
      * and independent of root background restoration. */
     int desktop_h = screen_h - bar_h;
@@ -1866,44 +1881,21 @@ static void bar_layout(void)
 static Pixmap bar_pm = None;
 static int bar_pm_w, bar_pm_h;
 
-static void draw_date_glyphs(Drawable d, const char *text, int x, int y,
-                             int scale, unsigned long color)
-{
-    static const char glyphs[11][5][4] = {
-        { "###", "#.#", "#.#", "#.#", "###" },
-        { " # ", "## ", " # ", " # ", "###" },
-        { "###", "  #", "###", "#  ", "###" },
-        { "###", "  #", "###", "  #", "###" },
-        { "#.#", "#.#", "###", "  #", "  #" },
-        { "###", "#  ", "###", "  #", "###" },
-        { "###", "#  ", "###", "#.#", "###" },
-        { "###", "  #", "  #", "  #", "  #" },
-        { "###", "#.#", "###", "#.#", "###" },
-        { "###", "#.#", "###", "  #", "###" },
-        { "  #", "  #", " # ", "#  ", "#  " }
-    };
-    XSetForeground(dpy, gc, color);
-    for (int i = 0; text[i]; i++) {
-        int glyph = text[i] == '/' ? 10 : text[i] >= '0' && text[i] <= '9' ? text[i] - '0' : -1;
-        if (glyph < 0) continue;
-        for (int row = 0; row < 5; row++)
-            for (int col = 0; col < 3; col++)
-                if (glyphs[glyph][row][col] == '#')
-                    XFillRectangle(dpy, d, gc, x + i * 4 * scale + col * scale,
-                                   y + row * scale, scale, scale);
-    }
-}
-
 static void draw_compact_date(Drawable d, const struct tm *tmv)
 {
     char month_day[16], year[16];
     snprintf(month_day, sizeof(month_day), "%02d/%02d", tmv->tm_mon + 1, tmv->tm_mday);
     snprintf(year, sizeof(year), "%04d", tmv->tm_year + 1900);
-    const int scale = 2, line_h = 10, gap = 2;
-    int y = (bar_h - (line_h * 2 + gap)) / 2;
-    draw_date_glyphs(d, month_day, bar_date_x() + (BAR_DATE_W - 38) / 2, y, scale, PX.main);
-    draw_date_glyphs(d, year, bar_date_x() + (BAR_DATE_W - 30) / 2,
-                     y + line_h + gap, scale, PX.main);
+    /* Use the very same core font as the clock and every other bar label.
+     * The normal 13/14 px SCos fonts fit two rows even at bar_h = 28. */
+    int line_h = font->ascent + font->descent;
+    int y = (bar_h - line_h * 2) / 2;
+    if (y < 0) y = 0;
+    int md_w = text_w(month_day), year_w = text_w(year);
+    text_out(d, bar_date_x() + (BAR_DATE_W - md_w) / 2, y + font->ascent,
+             month_day, PX.main);
+    text_out(d, bar_date_x() + (BAR_DATE_W - year_w) / 2,
+             y + line_h + font->ascent, year, PX.main);
 }
 
 static void draw_bar(void)
@@ -1976,7 +1968,7 @@ static void draw_bar(void)
              wifi_radius * 2, wifi_radius * 2, 45 * 64, 90 * 64);
     XDrawArc(dpy, d, gc, wifi_cx - middle, wifi_cy - middle, middle * 2, middle * 2, 45 * 64, 90 * 64);
     XDrawArc(dpy, d, gc, wifi_cx - inner, wifi_cy - inner, inner * 2, inner * 2, 45 * 64, 90 * 64);
-    XFillRectangle(dpy, d, gc, wifi_cx - 2, wifi_cy - 2, 4, 4);
+    XFillRectangle(dpy, d, gc, wifi_cx - 2, wifi_cy - 1, 4, 4);
     if (!wifi_adapter_count)
         XDrawLine(dpy, d, gc, wx + 7, by + bh - 5, wx + 27, by + 4);
 
@@ -2459,12 +2451,76 @@ static void pick_window(Window target)
 /* ------------------------------------------------------- window overview */
 static int overview_release_pending;
 
+static int overview_screen_height(void)
+{
+    int height = screen_h - bar_h;
+    return height > 1 ? height : 1;
+}
+
 static void overview_free_tiles(void)
 {
     for (int i = 0; i < overview_count; i++)
         if (overview_tiles[i].preview) XFreePixmap(dpy, overview_tiles[i].preview);
     free(overview_tiles);
     overview_tiles = NULL; overview_count = 0; overview_hover = -1;
+}
+
+static int composite_state;
+static Bool (*composite_query_extension)(Display *, int *, int *);
+static void (*composite_redirect_window)(Display *, Window, int);
+static void (*composite_unredirect_window)(Display *, Window, int);
+static Pixmap (*composite_name_window_pixmap)(Display *, Window);
+
+static int overview_composite_available(void)
+{
+    if (composite_state) return composite_state > 0;
+    composite_state = -1;
+    void *library = dlopen("libXcomposite.so.6", RTLD_LAZY | RTLD_LOCAL);
+    if (!library) return 0;
+    composite_query_extension = (Bool (*)(Display *, int *, int *))
+        dlsym(library, "XCompositeQueryExtension");
+    composite_redirect_window = (void (*)(Display *, Window, int))
+        dlsym(library, "XCompositeRedirectWindow");
+    composite_unredirect_window = (void (*)(Display *, Window, int))
+        dlsym(library, "XCompositeUnredirectWindow");
+    composite_name_window_pixmap = (Pixmap (*)(Display *, Window))
+        dlsym(library, "XCompositeNameWindowPixmap");
+    if (!composite_query_extension || !composite_redirect_window ||
+        !composite_unredirect_window || !composite_name_window_pixmap) return 0;
+    int event_base = 0, error_base = 0;
+    if (!composite_query_extension(dpy, &event_base, &error_base)) return 0;
+    composite_state = 1;
+    return 1;
+}
+
+struct overview_channel {
+    unsigned long mask, maximum;
+    int shift;
+};
+
+static struct overview_channel overview_channel_format(unsigned long mask)
+{
+    struct overview_channel channel = { mask, 0, 0 };
+    if (!mask) return channel;
+    while (!(mask & 1)) { mask >>= 1; channel.shift++; }
+    channel.maximum = mask;
+    return channel;
+}
+
+static unsigned int overview_channel_to_8(unsigned long pixel,
+                                          const struct overview_channel *channel)
+{
+    if (!channel->mask || !channel->maximum) return 0;
+    unsigned long value = (pixel & channel->mask) >> channel->shift;
+    return (unsigned int)((value * 255 + channel->maximum / 2) / channel->maximum);
+}
+
+static unsigned long overview_channel_from_8(unsigned int value,
+                                             const struct overview_channel *channel)
+{
+    if (!channel->mask || !channel->maximum) return 0;
+    unsigned long scaled = (value * channel->maximum + 127) / 255;
+    return (scaled << channel->shift) & channel->mask;
 }
 
 static void overview_capture(struct overview_tile *tile, struct client *c)
@@ -2479,12 +2535,39 @@ static void overview_capture(struct overview_tile *tile, struct client *c)
     int pw = (int)(c->w * scale), ph = (int)(c->h * scale);
     if (pw < 1) pw = 1;
     if (ph < 1) ph = 1;
-    XImage *source = XGetImage(dpy, c->win, 0, 0, (unsigned int)c->w, (unsigned int)c->h,
+
+    /* Obscured X11 windows do not have reliable readable pixels. Composite's
+     * named pixmap does, including 32-bit application visuals. Redirect only
+     * for the synchronous capture, then restore ordinary non-composited
+     * rendering. With an external compositor, use its pixmap without changing
+     * redirection. This is on-demand thumbnail capture, not a compositor. */
+    Drawable source_drawable = c->win;
+    Pixmap named = None;
+    int unredirect = 0;
+    if (overview_composite_available()) {
+        Atom compositor_atom = XInternAtom(dpy, "_NET_WM_CM_S0", True);
+        int external_compositor = compositor_atom && XGetSelectionOwner(dpy, compositor_atom);
+        if (!external_compositor) composite_redirect_window(dpy, c->win, 0);
+        named = composite_name_window_pixmap(dpy, c->win);
+        if (named) {
+            source_drawable = named;
+            unredirect = !external_compositor;
+        } else if (!external_compositor) {
+            composite_unredirect_window(dpy, c->win, 0);
+        }
+    }
+    XImage *source = XGetImage(dpy, source_drawable, 0, 0, (unsigned int)c->w, (unsigned int)c->h,
                                AllPlanes, ZPixmap);
+    if (named) XFreePixmap(dpy, named);
+    if (unredirect) composite_unredirect_window(dpy, c->win, 0);
+    if (!source && source_drawable != c->win)
+        source = XGetImage(dpy, c->win, 0, 0, (unsigned int)c->w, (unsigned int)c->h,
+                           AllPlanes, ZPixmap);
     if (!source) return;
-    if (source->depth != DefaultDepth(dpy, scr_no) || !source->data) {
+    if (!source->data || !source->red_mask || !source->green_mask || !source->blue_mask) {
         XDestroyImage(source); return;
     }
+
     Pixmap preview = XCreatePixmap(dpy, overview_win, pw, ph, DefaultDepth(dpy, scr_no));
     XImage *dest = XCreateImage(dpy, DefaultVisual(dpy, scr_no), DefaultDepth(dpy, scr_no),
                                 ZPixmap, 0, NULL, pw, ph, 32, 0);
@@ -2493,16 +2576,37 @@ static void overview_capture(struct overview_tile *tile, struct client *c)
         if (dest) XFree(dest);
         XDestroyImage(source); return;
     }
+    if (!dest->red_mask || !dest->green_mask || !dest->blue_mask) {
+        XFreePixmap(dpy, preview); XFree(dest); XDestroyImage(source); return;
+    }
     dest->data = malloc((size_t)dest->bytes_per_line * ph);
     if (!dest->data) {
         XFreePixmap(dpy, preview); XFree(dest); XDestroyImage(source); return;
     }
     XInitImage(dest);
+    struct overview_channel sr = overview_channel_format(source->red_mask);
+    struct overview_channel sg = overview_channel_format(source->green_mask);
+    struct overview_channel sb = overview_channel_format(source->blue_mask);
+    struct overview_channel dr = overview_channel_format(dest->red_mask);
+    struct overview_channel dg = overview_channel_format(dest->green_mask);
+    struct overview_channel db = overview_channel_format(dest->blue_mask);
+    int same_format = source->red_mask == dest->red_mask &&
+                      source->green_mask == dest->green_mask &&
+                      source->blue_mask == dest->blue_mask;
     for (int y = 0; y < ph; y++) {
         int sy = y * c->h / ph;
         for (int x = 0; x < pw; x++) {
             int sx = x * c->w / pw;
-            XPutPixel(dest, x, y, XGetPixel(source, sx, sy));
+            unsigned long pixel = XGetPixel(source, sx, sy);
+            if (!same_format) {
+                unsigned int r = overview_channel_to_8(pixel, &sr);
+                unsigned int g = overview_channel_to_8(pixel, &sg);
+                unsigned int b = overview_channel_to_8(pixel, &sb);
+                pixel = overview_channel_from_8(r, &dr) |
+                        overview_channel_from_8(g, &dg) |
+                        overview_channel_from_8(b, &db);
+            }
+            XPutPixel(dest, x, y, pixel);
         }
     }
     XPutImage(dpy, preview, gc, dest, 0, 0, 0, 0, pw, ph);
@@ -2519,7 +2623,7 @@ static void overview_rebuild(void)
     overview_count = nclients;
     int ax = OVERVIEW_MARGIN, ay = OVERVIEW_MARGIN + OVERVIEW_HEADER;
     int aw = screen_w - OVERVIEW_MARGIN * 2;
-    int ah = screen_h - ay - OVERVIEW_MARGIN;
+    int ah = overview_screen_height() - ay - OVERVIEW_MARGIN;
     if (aw < 1 || ah < 1) { overview_count = 0; return; }
     for (int i = 0; i < overview_count; i++) {
         struct overview_tile *tile = &overview_tiles[i];
@@ -2580,10 +2684,11 @@ static void overview_rebuild(void)
 static void draw_overview(void)
 {
     if (!overview_active) return;
+    int height = overview_screen_height();
     Pixmap pm = surface_backing(overview_win, &overview_pm, &overview_pm_w, &overview_pm_h,
-                                screen_w, screen_h);
+                                screen_w, height);
     Drawable d = pm ? pm : overview_win;
-    fill(d, 0, 0, screen_w, screen_h, PX.bg_top);
+    paint_wallpaper(d, screen_w, height);
     text_out(d, OVERVIEW_MARGIN, OVERVIEW_MARGIN + font->ascent, "Window overview", PX.main);
     char hint[96];
     snprintf(hint, sizeof(hint), "%d windows - click to focus; right-click or Esc closes", overview_count);
@@ -2594,8 +2699,10 @@ static void draw_overview(void)
         struct client *c = find_client(tile->win);
         int lit = i == overview_hover;
         fill(d, tile->x, tile->y, tile->w, tile->h, PX.win_bg);
-        rect(d, tile->x, tile->y, tile->w, tile->h, PX.main);
-        if (tile->w < 32 || tile->h < 48) continue;
+        if (tile->w < 32 || tile->h < 48) {
+            rect(d, tile->x, tile->y, tile->w, tile->h, PX.main);
+            continue;
+        }
         fill(d, tile->x + 1, tile->y + 1, tile->w - 2, 24, lit ? PX.main : PX.title_off);
         char title[300];
         snprintf(title, sizeof(title), "%s%.270s", c && c->minimized ? "[-] " : "",
@@ -2616,8 +2723,28 @@ static void draw_overview(void)
                          c && c->minimized ? "Minimized - preview unavailable" : "Preview unavailable",
                          tile->w - 20, PX.text);
         }
+        /* Paint all four edges last so a captured image can never leave a
+         * white or overwritten strip on the tile's right side. */
+        rect(d, tile->x, tile->y, tile->w, tile->h, PX.main);
     }
-    surface_present(overview_win, pm, screen_w, screen_h);
+    surface_present(overview_win, pm, screen_w, height);
+}
+
+static void overview_map_below_bar(void)
+{
+    XMapWindow(dpy, overview_win);
+    XWindowChanges wc;
+    wc.sibling = bar_win;
+    wc.stack_mode = Below;
+    XConfigureWindow(dpy, overview_win, CWSibling | CWStackMode, &wc);
+    /* A fullscreen frame may normally be above the dock. It must still be
+     * behind the overview until the overview closes. */
+    for (int i = 0; i < nclients; i++) {
+        if (!clients[i]->fullscreen) continue;
+        wc.sibling = overview_win;
+        wc.stack_mode = Below;
+        XConfigureWindow(dpy, clients[i]->frame, CWSibling | CWStackMode, &wc);
+    }
 }
 
 static void overview_close(void)
@@ -2627,6 +2754,12 @@ static void overview_close(void)
     XUnmapWindow(dpy, overview_win);
     XUngrabKeyboard(dpy, CurrentTime);
     overview_free_tiles();
+    if (edge_input_passthrough) {
+        XMapWindow(dpy, edge_win);
+        restack_right_rule();
+    }
+    for (int i = 0; i < nclients; i++)
+        if (clients[i]->fullscreen) XRaiseWindow(dpy, clients[i]->frame);
     if (active_client) XSetInputFocus(dpy, active_client->win, RevertToPointerRoot, CurrentTime);
     else XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
     draw_bar();
@@ -2643,8 +2776,9 @@ static void overview_show(void)
     overview_active = 1; overview_release_pending = 1;
     overview_rebuild();
     if (!overview_count) { overview_close(); return; }
-    XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, screen_h);
-    XMapWindow(dpy, overview_win); XRaiseWindow(dpy, overview_win);
+    XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, overview_screen_height());
+    XUnmapWindow(dpy, edge_win);
+    overview_map_below_bar();
     XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     draw_overview(); draw_bar();
 }
@@ -2655,7 +2789,7 @@ static void overview_clients_changed(void)
     XUnmapWindow(dpy, overview_win);
     overview_rebuild();
     if (!overview_count) { overview_close(); return; }
-    XMapWindow(dpy, overview_win); XRaiseWindow(dpy, overview_win);
+    overview_map_below_bar();
     draw_overview();
 }
 
@@ -2694,19 +2828,30 @@ static void on_button(XButtonEvent *e)
         if (overview_release_pending && e->type == ButtonRelease) {
             overview_release_pending = 0; return;
         }
-        if (e->type == ButtonPress) overview_release_pending = 0;
-        if (w != overview_win) return;
-        if (e->type == ButtonPress && e->button == Button3) { overview_close(); return; }
-        if (e->type == ButtonRelease && e->button == Button1) {
-            int index = overview_tile_at(e->x, e->y);
-            Window target = index >= 0 ? overview_tiles[index].win : None;
+        if (w == bar_win) {
+            if (e->type != ButtonPress) return;
+            int windows_button = e->x >= 48 && e->x < 158 &&
+                                 e->y >= 6 && e->y < bar_h - 6;
             overview_close();
-            if (target) {
-                struct client *c = find_client(target);
-                if (c) activate(c, 1);
+            /* Right-clicking the same button toggles the overview shut.
+             * Every other taskbar press continues through its normal path
+             * after closing the overview, including pins, launcher and Wi-Fi. */
+            if (windows_button && e->button == Button3) return;
+        } else {
+            if (e->type == ButtonPress) overview_release_pending = 0;
+            if (w != overview_win) return;
+            if (e->type == ButtonPress && e->button == Button3) { overview_close(); return; }
+            if (e->type == ButtonRelease && e->button == Button1) {
+                int index = overview_tile_at(e->x, e->y);
+                Window target = index >= 0 ? overview_tiles[index].win : None;
+                overview_close();
+                if (target) {
+                    struct client *c = find_client(target);
+                    if (c) activate(c, 1);
+                }
             }
+            return;
         }
-        return;
     }
     if (e->type == ButtonPress && w != root && desk_sel_mask) {
         desk_sel_mask = 0;
@@ -3076,18 +3221,24 @@ static void on_button(XButtonEvent *e)
 
 static void on_motion(XMotionEvent *e)
 {
-    if (overview_active) {
-        if (e->window == overview_win) {
-            int hover = overview_tile_at(e->x, e->y);
-            if (hover != overview_hover) { overview_hover = hover; draw_overview(); }
-        }
+    if (overview_active && e->window == overview_win) {
+        int hover = overview_tile_at(e->x, e->y);
+        if (hover != overview_hover) { overview_hover = hover; draw_overview(); }
         return;
+    }
+    if (overview_active && e->window != bar_win) return;
+    if (tool_kind != TOOL_NONE && e->window != tool_win && tool_hover != TOOL_HOVER_NONE) {
+        tool_hover = TOOL_HOVER_NONE;
+        draw_tool();
     }
     if (!drag.kind) {
         /* Hover tracking: nothing anywhere highlighted under the pointer,
          * which made the whole desktop feel unresponsive. Each surface
          * remembers what is hovered and repaints only when it changes. */
-        if (menu_kind != MENU_NONE && e->window == menu_win) {
+        if (tool_kind != TOOL_NONE && e->window == tool_win) {
+            int hover = tool_hover_at(e->x, e->y);
+            if (hover != tool_hover) { tool_hover = hover; draw_tool(); }
+        } else if (menu_kind != MENU_NONE && e->window == menu_win) {
             if (menu_kind == MENU_CONFIRM) {
                 int hover = -1;
                 if (e->y >= 86 && e->y < 114) {
@@ -3182,28 +3333,121 @@ static void on_motion(XMotionEvent *e)
     }
 }
 
+enum { MEDIA_VOLUME_MUTE, MEDIA_VOLUME_DOWN, MEDIA_VOLUME_UP,
+       MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_PREVIOUS,
+       MEDIA_BRIGHTNESS_UP, MEDIA_BRIGHTNESS_DOWN };
+
+static const char *media_command(int action)
+{
+    const char *configured = "";
+    switch (action) {
+    case MEDIA_VOLUME_MUTE: configured = cfg.volume_mute_cmd; break;
+    case MEDIA_VOLUME_DOWN: configured = cfg.volume_down_cmd; break;
+    case MEDIA_VOLUME_UP: configured = cfg.volume_up_cmd; break;
+    case MEDIA_PLAY_PAUSE: configured = cfg.media_play_pause_cmd; break;
+    case MEDIA_NEXT: configured = cfg.media_next_cmd; break;
+    case MEDIA_PREVIOUS: configured = cfg.media_previous_cmd; break;
+    case MEDIA_BRIGHTNESS_UP: configured = cfg.brightness_up_cmd; break;
+    case MEDIA_BRIGHTNESS_DOWN: configured = cfg.brightness_down_cmd; break;
+    }
+    if (configured[0]) return configured;
+    switch (action) {
+    case MEDIA_VOLUME_MUTE:
+        if (cmd_exists("wpctl")) return "wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle";
+        if (cmd_exists("pactl")) return "pactl set-sink-mute @DEFAULT_SINK@ toggle";
+        if (cmd_exists("amixer")) return "amixer -q sset Master toggle";
+        break;
+    case MEDIA_VOLUME_DOWN:
+        if (cmd_exists("wpctl")) return "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%-";
+        if (cmd_exists("pactl")) return "pactl set-sink-volume @DEFAULT_SINK@ -5%";
+        if (cmd_exists("amixer")) return "amixer -q sset Master 5%-";
+        break;
+    case MEDIA_VOLUME_UP:
+        if (cmd_exists("wpctl")) return "wpctl set-volume -l 1.0 @DEFAULT_AUDIO_SINK@ 5%+";
+        if (cmd_exists("pactl")) return "pactl set-sink-volume @DEFAULT_SINK@ +5%";
+        if (cmd_exists("amixer")) return "amixer -q sset Master 5%+";
+        break;
+    case MEDIA_PLAY_PAUSE:
+        if (cmd_exists("playerctl")) return "playerctl play-pause";
+        break;
+    case MEDIA_NEXT:
+        if (cmd_exists("playerctl")) return "playerctl next";
+        break;
+    case MEDIA_PREVIOUS:
+        if (cmd_exists("playerctl")) return "playerctl previous";
+        break;
+    case MEDIA_BRIGHTNESS_UP:
+        if (cmd_exists("brightnessctl")) return "brightnessctl set +5%";
+        if (cmd_exists("light")) return "light -A 5";
+        break;
+    case MEDIA_BRIGHTNESS_DOWN:
+        if (cmd_exists("brightnessctl")) return "brightnessctl set 5%-";
+        if (cmd_exists("light")) return "light -U 5";
+        break;
+    }
+    return NULL;
+}
+
+static void run_media_action(int action)
+{
+    const char *command = media_command(action);
+    if (command) spawn(command);
+}
+
+static int media_key_action(KeySym ks)
+{
+    int action = -1;
+    if (ks == XF86XK_AudioMute) action = MEDIA_VOLUME_MUTE;
+    else if (ks == XF86XK_AudioLowerVolume) action = MEDIA_VOLUME_DOWN;
+    else if (ks == XF86XK_AudioRaiseVolume) action = MEDIA_VOLUME_UP;
+    else if (ks == XF86XK_AudioPlay) action = MEDIA_PLAY_PAUSE;
+    else if (ks == XF86XK_AudioPause) action = MEDIA_PLAY_PAUSE;
+    else if (ks == XF86XK_AudioNext) action = MEDIA_NEXT;
+    else if (ks == XF86XK_AudioPrev) action = MEDIA_PREVIOUS;
+    else if (ks == XF86XK_MonBrightnessUp) action = MEDIA_BRIGHTNESS_UP;
+    else if (ks == XF86XK_MonBrightnessDown) action = MEDIA_BRIGHTNESS_DOWN;
+    if (action < 0) return 0;
+    run_media_action(action);
+    return 1;
+}
+
 static void on_key(XKeyEvent *e)
 {
     KeySym ks = XLookupKeysym(e, 0);
     unsigned int mods = e->state & (ShiftMask | ControlMask | Mod1Mask | Mod4Mask);
 
+    /* Hardware/media keys remain available in panels and the overview. */
+    if (!mods && media_key_action(ks)) return;
+
     if (overview_active) {
-        if (ks == XK_Escape) overview_close();
-        else if (ks == XK_Left || ks == XK_Up || ks == XK_Right || ks == XK_Down || ks == XK_Tab) {
+        if (ks == XK_Escape) { overview_close(); return; }
+        if (ks == XK_Left || ks == XK_Up || ks == XK_Right || ks == XK_Down || ks == XK_Tab) {
             if (overview_count) {
                 int direction = ks == XK_Left || ks == XK_Up ? -1 : 1;
                 if (overview_hover < 0) overview_hover = 0;
                 else overview_hover = (overview_hover + direction + overview_count) % overview_count;
                 draw_overview();
             }
-        } else if ((ks == XK_Return || ks == XK_KP_Enter) && overview_hover >= 0 &&
-                   overview_hover < overview_count) {
-            Window target = overview_tiles[overview_hover].win;
-            overview_close();
-            struct client *c = find_client(target);
-            if (c) activate(c, 1);
+            return;
         }
-        return;
+        if (ks == XK_Return || ks == XK_KP_Enter) {
+            if (overview_hover >= 0 && overview_hover < overview_count) {
+                Window target = overview_tiles[overview_hover].win;
+                overview_close();
+                struct client *c = find_client(target);
+                if (c) activate(c, 1);
+            }
+            return;
+        }
+        int global_key = (mods == Mod1Mask &&
+                          (ks == XK_Tab || ks == XK_F4 || ks == XK_F9 || ks == XK_F10)) ||
+                         (mods == (Mod1Mask | ShiftMask) && ks == XK_Tab) ||
+                         (mods == Mod4Mask &&
+                          (ks == XK_Return || ks == XK_KP_Enter || ks == XK_d || ks == XK_D ||
+                           ks == XK_q || ks == XK_Q || ks == XK_m || ks == XK_M || ks == XK_comma ||
+                           ks == XK_F1 || ks == XK_F2 || ks == XK_F3));
+        if (!global_key) return;
+        overview_close();
     }
     if (tool_kind != TOOL_NONE) { tool_key(e); return; }
     if (menu_kind != MENU_NONE) {
@@ -3264,6 +3508,9 @@ static void on_key(XKeyEvent *e)
     else if (mods == Mod1Mask && ks == XK_F4 && active_client) close_client(active_client);
     else if (mods == Mod1Mask && ks == XK_F10 && active_client) set_maximized(active_client, !active_client->maximized);
     else if (mods == Mod1Mask && ks == XK_F9 && active_client) minimize(active_client);
+    else if (mods == Mod4Mask && ks == XK_F1) run_media_action(MEDIA_VOLUME_MUTE);
+    else if (mods == Mod4Mask && ks == XK_F2) run_media_action(MEDIA_VOLUME_DOWN);
+    else if (mods == Mod4Mask && ks == XK_F3) run_media_action(MEDIA_VOLUME_UP);
     else if (mods == Mod4Mask && (ks == XK_Return || ks == XK_KP_Enter)) spawn(detect_terminal());
     else if (mods == Mod4Mask && (ks == XK_d || ks == XK_D)) launcher_toggle(1);
     else if (mods == Mod4Mask && (ks == XK_q || ks == XK_Q) && active_client) close_client(active_client);
@@ -3279,6 +3526,11 @@ static void grab_shortcuts(void)
         { XK_Return, Mod4Mask }, { XK_d, Mod4Mask }, { XK_D, Mod4Mask },
         { XK_q, Mod4Mask }, { XK_Q, Mod4Mask },
         { XK_m, Mod4Mask }, { XK_M, Mod4Mask }, { XK_comma, Mod4Mask },
+        { XK_F1, Mod4Mask }, { XK_F2, Mod4Mask }, { XK_F3, Mod4Mask },
+        { XF86XK_AudioMute, 0 }, { XF86XK_AudioLowerVolume, 0 }, { XF86XK_AudioRaiseVolume, 0 },
+        { XF86XK_AudioPlay, 0 }, { XF86XK_AudioPause, 0 },
+        { XF86XK_AudioNext, 0 }, { XF86XK_AudioPrev, 0 },
+        { XF86XK_MonBrightnessUp, 0 }, { XF86XK_MonBrightnessDown, 0 },
     };
     /* also with CapsLock / NumLock latched */
     static const unsigned int extras[] = { 0, LockMask, Mod2Mask, LockMask | Mod2Mask };
@@ -3608,6 +3860,7 @@ static void create_ui_windows(void)
     int shape_event = 0, shape_error = 0;
     if (XShapeQueryExtension(dpy, &shape_event, &shape_error)) {
         XShapeCombineRectangles(dpy, edge_win, ShapeInput, 0, 0, NULL, 0, ShapeSet, Unsorted);
+        edge_input_passthrough = 1;
         XMapWindow(dpy, edge_win);
     }
 
@@ -3647,7 +3900,7 @@ static void create_ui_windows(void)
                              CopyFromParent, InputOutput, CopyFromParent,
                              CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
     at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask | PointerMotionMask;
-    overview_win = XCreateWindow(dpy, root, 0, 0, screen_w, screen_h, 0,
+    overview_win = XCreateWindow(dpy, root, 0, 0, screen_w, overview_screen_height(), 0,
                                  CopyFromParent, InputOutput, CopyFromParent,
                                  CWBackPixel | CWEventMask | CWOverrideRedirect |
                                  (wm_cursor ? CWCursor : 0), &at);
@@ -4080,6 +4333,7 @@ static void tool_close(void)
 {
     if (tool_kind == TOOL_NONE) return;
     tool_kind = TOOL_NONE;
+    tool_hover = TOOL_HOVER_NONE;
     tool_release_pending = 0;
     settings_field = 0;
     wifi_password_editing = 0;
@@ -4092,6 +4346,7 @@ static void tool_open(int kind)
     menu_close();
     if (launch_open) launcher_toggle(0);
     tool_kind = kind;
+    tool_hover = TOOL_HOVER_NONE;
     tool_release_pending = 1;
     settings_field = 0;
     if (kind == TOOL_SYSMON) refresh_sysmon();
@@ -4123,6 +4378,55 @@ static void draw_meter(Drawable d, const char *label, double frac, const char *v
 static Pixmap tool_pm = None;
 static int tool_pm_w, tool_pm_h;
 
+static int tool_hover_at(int x, int y)
+{
+    if (x >= TOOL_W - 30 && x < TOOL_W && y >= 0 && y < 28) return TOOL_HOVER_CLOSE;
+    if (tool_kind == TOOL_WIFI) {
+        for (int i = 0; i < WIFI_VISIBLE_NETWORKS; i++) {
+            int index = wifi_network_scroll + i;
+            int row_y = WIFI_NETWORK_Y + i * 24;
+            if (index < wifi_network_count && x >= 8 && x < 532 &&
+                y >= row_y && y < row_y + 24) return TOOL_HOVER_NETWORK + i;
+        }
+        if (y >= 318 && y < 348) {
+            if (x >= 100 && x < 330) return TOOL_HOVER_WIFI_PASSWORD;
+            if (x >= 340 && x < 424) return TOOL_HOVER_WIFI_CONNECT;
+            if (x >= 434 && x < 524) return TOOL_HOVER_WIFI_SCAN;
+        }
+    } else if (tool_kind == TOOL_SETTINGS) {
+        if (y >= 62 && y < 102) {
+            for (int i = 0; i < scos_theme_count; i++) {
+                int theme_x = 16 + i * 128;
+                if (x >= theme_x && x < theme_x + 120) return TOOL_HOVER_THEME + i;
+            }
+        }
+        for (int field = 1; field <= 4; field++) {
+            int field_y = 116 + (field - 1) * 36;
+            if (x >= 100 && x < 524 && y >= field_y && y < field_y + 30)
+                return TOOL_HOVER_FIELD + field;
+        }
+        if (y >= 268 && y < 298) {
+            if (x >= 100 && x < 134) return TOOL_HOVER_BAR_DEC;
+            if (x >= 204 && x < 238) return TOOL_HOVER_BAR_INC;
+            if (x >= 300 && x < 334) return TOOL_HOVER_ICON_DEC;
+            if (x >= 386 && x < 420) return TOOL_HOVER_ICON_INC;
+            if (x >= 440 && x < 524) return TOOL_HOVER_GRID;
+        }
+    }
+    return TOOL_HOVER_NONE;
+}
+
+static int tool_item_lit(int id, int selected)
+{
+    return selected || tool_hover == id;
+}
+
+static void tool_draw_box(Drawable d, int x, int y, int w, int h, int id, int selected)
+{
+    fill(d, x, y, w, h, tool_item_lit(id, selected) ? PX.main : PX.win_bg);
+    rect(d, x, y, w, h, PX.main);
+}
+
 static void draw_tool(void)
 {
     if (tool_kind == TOOL_NONE) return;
@@ -4134,7 +4438,9 @@ static void draw_tool(void)
     text_out(d, 10, 6 + font->ascent,
              tool_kind == TOOL_SETTINGS ? "Settings" : tool_kind == TOOL_WIFI ? "Wi-Fi" : "SysMon",
              PX.title_text);
-    draw_button_glyph(d, TOOL_W - 27, 4, 2, PX.title_text);
+    int close_lit = tool_hover == TOOL_HOVER_CLOSE;
+    fill(d, TOOL_W - 29, 2, 24, 22, close_lit ? PX.title_text : PX.main);
+    draw_button_glyph(d, TOOL_W - 27, 4, 2, close_lit ? PX.main : PX.title_text);
 
     if (tool_kind == TOOL_WIFI) {
         char line[768];
@@ -4175,7 +4481,8 @@ static void draw_tool(void)
             struct wifi_network *network = &wifi_networks[index];
             int y = WIFI_NETWORK_Y + i * 24;
             int selected = index == wifi_selected;
-            if (selected) fill(d, 8, y, 524, 24, PX.main);
+            int lit = tool_item_lit(TOOL_HOVER_NETWORK + i, selected);
+            if (lit) fill(d, 8, y, 524, 24, PX.main);
             char signal_text[16], state[64];
             if (network->signal >= 0) snprintf(signal_text, sizeof(signal_text), "%d%%", network->signal);
             else snprintf(signal_text, sizeof(signal_text), "--");
@@ -4186,27 +4493,30 @@ static void draw_tool(void)
                      network->ssid[0] ? network->ssid : "<hidden>", network->device,
                      signal_text, state);
             clipped_text(d, 14, y + 6 + font->ascent, line, 512,
-                         selected ? PX.title_text : network->in_use ? PX.main : PX.text);
+                         lit ? PX.title_text : network->in_use ? PX.main : PX.text);
         }
         text_out(d, 16, 327 + font->ascent, "Password", PX.main);
-        fill(d, 100, 318, 230, 30, wifi_password_editing ? PX.main : PX.win_bg);
-        rect(d, 100, 318, 230, 30, wifi_password_editing ? PX.title_text : PX.main);
+        int password_lit = tool_item_lit(TOOL_HOVER_WIFI_PASSWORD, wifi_password_editing);
+        tool_draw_box(d, 100, 318, 230, 30, TOOL_HOVER_WIFI_PASSWORD, wifi_password_editing);
+        if (wifi_password_editing) rect(d, 100, 318, 230, 30, PX.title_text);
         char masked[128];
         size_t password_n = strlen(wifi_password);
         if (password_n >= sizeof(masked)) password_n = sizeof(masked) - 1;
         memset(masked, '*', password_n); masked[password_n] = 0;
         clipped_text(d, 108, 327 + font->ascent,
                      wifi_password_editing ? masked : (password_n ? masked : "(stored/open)"), 214,
-                     wifi_password_editing ? PX.title_text : PX.text);
-        rect(d, 340, 318, 84, 30, PX.main);
+                     password_lit ? PX.title_text : PX.text);
+        tool_draw_box(d, 340, 318, 84, 30, TOOL_HOVER_WIFI_CONNECT, 0);
         const char *connect_label = "Connect";
         if (wifi_selected >= 0 && wifi_selected < wifi_network_count) {
             if (wifi_networks[wifi_selected].hosted) connect_label = "Hosted";
             else if (wifi_networks[wifi_selected].in_use) connect_label = "Rejoin";
         }
-        clipped_text(d, 346, 327 + font->ascent, connect_label, 72, PX.main);
-        rect(d, 434, 318, 90, 30, PX.main);
-        text_out(d, 457, 327 + font->ascent, "Scan", PX.main);
+        clipped_text(d, 346, 327 + font->ascent, connect_label, 72,
+                     tool_item_lit(TOOL_HOVER_WIFI_CONNECT, 0) ? PX.title_text : PX.main);
+        tool_draw_box(d, 434, 318, 90, 30, TOOL_HOVER_WIFI_SCAN, 0);
+        text_out(d, 457, 327 + font->ascent, "Scan",
+                 tool_item_lit(TOOL_HOVER_WIFI_SCAN, 0) ? PX.title_text : PX.main);
         clipped_text(d, 16, 360, wifi_status, 508, PX.text);
         clipped_text(d, 16, 380, "Joined networks and hosted hotspots stay separate by card; Esc closes", 508, PX.title_off);
         surface_present(tool_win, pm, TOOL_W, TOOL_H);
@@ -4256,11 +4566,11 @@ static void draw_tool(void)
     for (int i = 0; i < scos_theme_count; i++) {
         int x = 16 + i * 128, y = 62;
         int selected = !strcmp(cfg.theme, scos_themes[i].id);
-        fill(d, x, y, 120, 40, selected ? PX.main : PX.win_bg);
-        rect(d, x, y, 120, 40, PX.main);
+        int lit = tool_item_lit(TOOL_HOVER_THEME + i, selected);
+        tool_draw_box(d, x, y, 120, 40, TOOL_HOVER_THEME + i, selected);
         int tw = text_w(scos_themes[i].name);
         text_out(d, x + (120 - tw) / 2, y + 14 + font->ascent, scos_themes[i].name,
-                 selected ? PX.title_text : PX.text);
+                 lit ? PX.title_text : PX.text);
     }
 
     static const char *labels[5] = { "", "Terminal", "Files", "Taskbar pins", "Desktop pins" };
@@ -4268,8 +4578,9 @@ static void draw_tool(void)
         int y = 116 + (field - 1) * 36;
         text_out(d, 16, y + 9 + font->ascent, labels[field], PX.main);
         int editing = settings_field == field;
-        fill(d, 100, y, 424, 30, editing ? PX.main : PX.win_bg);
-        rect(d, 100, y, 424, 30, editing ? PX.title_text : PX.main);
+        int lit = tool_item_lit(TOOL_HOVER_FIELD + field, editing);
+        tool_draw_box(d, 100, y, 424, 30, TOOL_HOVER_FIELD + field, editing);
+        if (editing) rect(d, 100, y, 424, 30, PX.title_text);
         char shown[1056];
         size_t cap = 0; char *target = settings_target(field, &cap); (void)cap;
         if (settings_field == field) snprintf(shown, sizeof(shown), "%s", settings_edit);
@@ -4279,7 +4590,7 @@ static void draw_tool(void)
             const char *e = detect_files_exec();
             snprintf(shown, sizeof(shown), "(auto: %s)", e ? e : "xdg-open");
         } else shown[0] = 0;
-        clipped_text(d, 108, y + 9 + font->ascent, shown, 390, editing ? PX.title_text : PX.text);
+        clipped_text(d, 108, y + 9 + font->ascent, shown, 390, lit ? PX.title_text : PX.text);
         if (editing && (time(NULL) % 2) == 0) {
             int cx = 108 + text_w(settings_edit);
             if (cx < 518) fill(d, cx, y + 8, 2, 14, PX.title_text);
@@ -4287,22 +4598,27 @@ static void draw_tool(void)
     }
 
     text_out(d, 16, 277 + font->ascent, "Taskbar", PX.main);
-    rect(d, 100, 268, 34, 30, PX.main);
-    text_out(d, 112, 277 + font->ascent, "-", PX.text);
+    tool_draw_box(d, 100, 268, 34, 30, TOOL_HOVER_BAR_DEC, 0);
+    text_out(d, 112, 277 + font->ascent, "-",
+             tool_item_lit(TOOL_HOVER_BAR_DEC, 0) ? PX.title_text : PX.text);
     char bh[32]; snprintf(bh, sizeof(bh), "%d px", cfg.bar_height);
     text_out(d, 146, 277 + font->ascent, bh, PX.text);
-    rect(d, 204, 268, 34, 30, PX.main);
-    text_out(d, 216, 277 + font->ascent, "+", PX.text);
+    tool_draw_box(d, 204, 268, 34, 30, TOOL_HOVER_BAR_INC, 0);
+    text_out(d, 216, 277 + font->ascent, "+",
+             tool_item_lit(TOOL_HOVER_BAR_INC, 0) ? PX.title_text : PX.text);
 
     text_out(d, 250, 277 + font->ascent, "Icons", PX.main);
-    rect(d, 300, 268, 34, 30, PX.main);
-    text_out(d, 312, 277 + font->ascent, "-", PX.text);
+    tool_draw_box(d, 300, 268, 34, 30, TOOL_HOVER_ICON_DEC, 0);
+    text_out(d, 312, 277 + font->ascent, "-",
+             tool_item_lit(TOOL_HOVER_ICON_DEC, 0) ? PX.title_text : PX.text);
     char is[32]; snprintf(is, sizeof(is), "%d", cfg.desktop_icon_size);
     text_out(d, 346, 277 + font->ascent, is, PX.text);
-    rect(d, 386, 268, 34, 30, PX.main);
-    text_out(d, 398, 277 + font->ascent, "+", PX.text);
-    rect(d, 440, 268, 84, 30, PX.main);
-    text_out(d, 450, 277 + font->ascent, cfg.desktop_grid ? "Grid on" : "Grid off", PX.text);
+    tool_draw_box(d, 386, 268, 34, 30, TOOL_HOVER_ICON_INC, 0);
+    text_out(d, 398, 277 + font->ascent, "+",
+             tool_item_lit(TOOL_HOVER_ICON_INC, 0) ? PX.title_text : PX.text);
+    tool_draw_box(d, 440, 268, 84, 30, TOOL_HOVER_GRID, 0);
+    text_out(d, 450, 277 + font->ascent, cfg.desktop_grid ? "Grid on" : "Grid off",
+             tool_item_lit(TOOL_HOVER_GRID, 0) ? PX.title_text : PX.text);
 
     clipped_text(d, 16, 326, settings_status[0] ? settings_status :
                  "Click fields to edit. Drag shortcuts to rearrange or move between surfaces.", 508, PX.text);
@@ -4657,7 +4973,7 @@ int main(int argc, char **argv)
                     screen_w = ev.xconfigure.width; screen_h = ev.xconfigure.height;
                     XMoveResizeWindow(dpy, edge_win, desktop_right_rule(), 0, DESK_RULE_W, screen_h - bar_h);
                     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
-                    XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, screen_h);
+                    XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, overview_screen_height());
                     desktop_normalize_slots(); pins_sync_config();
                     draw_desktop(); draw_bar(); recalc_struts();
                     overview_clients_changed();

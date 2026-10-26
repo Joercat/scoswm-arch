@@ -96,7 +96,8 @@ function property(server, win, name) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'scoswm-graphical-'));
     fs.mkdirSync(path.join(home, '.config/scoswm'), { recursive: true });
     fs.writeFileSync(path.join(home, '.config/scoswm/scoswm.conf'),
-        `bar_height=28\npins=terminal,files,sysmon,settings\nfiles=${path.join(repo, 'test_file_client')}\n`);
+        `bar_height=28\npins=terminal,files,sysmon,settings\nfiles=${path.join(repo, 'test_file_client')}\n` +
+        `volume_mute_cmd=media-action mute\nvolume_down_cmd=media-action down\nvolume_up_cmd=media-action up\n`);
     fs.mkdirSync(path.join(home, '.local/share/applications'), { recursive: true });
     fs.mkdirSync(path.join(home, '.local/share/icons'), { recursive: true });
     fs.copyFileSync(path.join(repo, 'packaging/scos-terminal.desktop'), path.join(home, '.local/share/applications/scos-terminal.desktop'));
@@ -109,7 +110,7 @@ function property(server, win, name) {
 if [ "$1" = "-t" ]; then
     : > "$NMCLI_LOG.started"
     sleep 2
-    printf '%s\\n' ':Coffee:99:--:wlp1s0' '*:HomeNet:82:WPA2:wlp1s0' '*:HomeNet:71:WPA2:wlp2s0' \\
+    printf '%s\\n' ':Coffee:99:--:wlp1s0' '*:HomeNet:82:WPA2:wlp1s0' ':HomeNet:65:WPA2:wlp1s0' '*:HomeNet:71:WPA2:wlp2s0' \\
         ':Guest:55:--:wlp1s0' ':Lab:60:WPA2:wlp2s0' ':Five:50:--:wlp1s0' \\
         ':Six:49:--:wlp2s0' ':Seven:48:--:wlp1s0' ':Eight:47:--:wlp2s0'
     : > "$NMCLI_LOG.finished"
@@ -119,6 +120,9 @@ elif [ "$1" = "device" ]; then
 fi
 `);
     fs.chmodSync(path.join(fakeBin, 'nmcli'), 0o755);
+    fs.writeFileSync(path.join(fakeBin, 'media-action'),
+        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "${NMCLI_LOG}.media"\n');
+    fs.chmodSync(path.join(fakeBin, 'media-action'), 0o755);
     const env = { ...process.env, DISPLAY: displayName, HOME: home, XCURSOR_THEME: 'SCos', XCURSOR_SIZE: '24',
         PATH: `${fakeBin}:${process.env.PATH || '/usr/bin:/bin'}`, NMCLI_LOG: nmcliLog };
     delete env.XDG_CONFIG_HOME;
@@ -145,7 +149,7 @@ fi
             property(server, w, 'WM_NAME') === 'SCosWM desktop right rule' && w.mapped), 'dedicated right-rule window');
         assert.equal(edgeRule.x, 783);
         assert.equal(edgeRule.y, 0);
-        assert.equal(edgeRule.width, 6);
+        assert.equal(edgeRule.width, 2);
         assert.equal(edgeRule.height, 572);
         assert.equal(edgeRule.inputShapeEmpty, true, 'right rule must not intercept application input');
         const main = 0x39ff14;
@@ -191,9 +195,9 @@ fi
         });
         server.compose();
         const rootPixel = (x, y) => server.root.raster.data[y * 800 + x] & 0xffffff;
-        assert.equal(rootPixel(783, 100), main, 'inset right desktop border');
-        assert.equal(rootPixel(784, 100), main, 'second inset right desktop border column');
-        assert.notEqual(rootPixel(799, 100), main, 'right border still depends on the physical edge');
+        assert.equal(rootPixel(783, 100), main, 'thin inset right desktop border');
+        assert.equal(rootPixel(784, 100), main, 'second thin right desktop border column');
+        assert.notEqual(rootPixel(785, 100), main, 'right border became a thick bar again');
         assert.equal(rootPixel(700, 571), main, 'bottom desktop border');
 
         // "Files" is five 8px glyphs in an 80px cell at x=104: centered x=124.
@@ -549,11 +553,19 @@ fi
         assert.equal(settingsPixel(130, 64), main, 'selected Settings theme is not a bright accent');
         assert.ok(countColorPixels(settingsPixel, 30, 70, 100, 30, 0x001500) > 0,
             'selected Settings theme text lacks contrast');
+        server.injectPointerMove(settings.absX() + 200, settings.absY() + 65);
+        await waitFor(() => settingsPixel(250, 70) === main, 'unselected Settings theme hover fill');
+        assert.ok(countColorPixels(settingsPixel, 165, 60, 100, 30, 0x001500) > 0,
+            'Settings theme hover text lacks contrast');
         server.injectPointerMove(settings.absX() + 200, settings.absY() + 139);
+        await waitFor(() => settingsPixel(510, 130) === main, 'Settings field hover fill');
+        assert.ok(countColorPixels(settingsPixel, 108, 129, 390, 24, 0x001500) > 0,
+            'Settings field hover text lacks contrast');
         server.injectButton(1, true);
         server.injectButton(1, false);
         await waitFor(() => settingsPixel(520, 126) === main, 'active Settings field highlight');
         server.injectPointerMove(settings.absX() + 220, settings.absY() + 270);
+        await waitFor(() => settingsPixel(234, 275) === main, 'Settings taskbar increment hover fill');
         server.injectButton(1, true);
         server.injectButton(1, false);
         await waitFor(() => bar.height === 32 && bar.y === 568, 'live 32px taskbar scaling');
@@ -593,6 +605,9 @@ fi
         await waitFor(() => configValue('desktop_grid') === '1', 'desktop grid restoration');
 
         server.injectPointerMove(settings.absX() + 520, settings.absY() + 12);
+        await waitFor(() => settingsPixel(530, 5) === 0x001500, 'Settings Close hover inversion');
+        assert.ok(countColorPixels(settingsPixel, 516, 2, 22, 20, main) > 0,
+            'Settings Close hover glyph lacks contrast');
         server.injectButton(1, true);
         server.injectButton(1, false);
         await waitFor(() => !settings.mapped, 'Settings close');
@@ -604,7 +619,8 @@ fi
             'covering application resize');
         await waitFor(() => {
             server.compose();
-            return rootPixel(783, 100) === main && rootPixel(784, 100) === main;
+            return rootPixel(783, 100) === main && rootPixel(784, 100) === main &&
+                rootPixel(785, 100) !== main;
         }, 'right rule visible above covering application');
         assert.ok(server.root.children.indexOf(edgeRule) > server.root.children.indexOf(frame),
             'right rule stacked below covering application');
@@ -850,7 +866,7 @@ fi
         await waitFor(() => fs.existsSync(path.join(home, 'bin/renamed')) && !fs.existsSync(createdFolder),
             'Files context rename changed the real directory');
         const filesFrame = filesWin.parent;
-        const filesCloseX = filesFrame.absX() + filesFrame.width - 13;
+        const filesCloseX = filesFrame.absX() + filesFrame.width - 17; // x=783: thin-rule column
         const filesCloseY = filesFrame.absY() + 10;
         server.injectPointerMove(filesCloseX, filesCloseY);
         assert.equal(server.pointerWindow(), filesFrame, 'right rule intercepted Files Close input');
@@ -871,11 +887,19 @@ fi
         await waitFor(() => fs.existsSync(`${nmcliLog}.finished`), 'fake Wi-Fi scan results');
         await delay(150);
         const wifiPixel = (x, y) => wifiPanel.raster.data[y * wifiPanel.width + x] & 0xffffff;
+        server.injectPointerMove(wifiPanel.absX() + 150, wifiPanel.absY() + 200);
+        await waitFor(() => wifiPixel(530, 185) === main, 'Wi-Fi row hover fill');
         const unscrolledWifi = rasterSignature(wifiPanel);
         click(wifiPanel.absX() + 150, wifiPanel.absY() + 200, 5);
         await waitFor(() => rasterSignature(wifiPanel) !== unscrolledWifi, 'Wi-Fi network wheel scrolling');
         click(wifiPanel.absX() + 150, wifiPanel.absY() + 200, 4);
         await waitFor(() => rasterSignature(wifiPanel) === unscrolledWifi, 'Wi-Fi network scroll restoration');
+        server.injectPointerMove(wifiPanel.absX() + 382, wifiPanel.absY() + 333);
+        await waitFor(() => wifiPixel(410, 325) === main, 'Wi-Fi Connect hover fill');
+        assert.ok(countColorPixels(wifiPixel, 340, 322, 160, 24, 0x001500) > 0,
+            'Wi-Fi Connect hover text lacks contrast');
+        server.injectPointerMove(wifiPanel.absX() + 480, wifiPanel.absY() + 333);
+        await waitFor(() => wifiPixel(500, 325) === main, 'Wi-Fi Scan hover fill');
         click(wifiPanel.absX() + 30, wifiPanel.absY() + 168); // active HomeNet must sort before stronger inactive Coffee
         await waitFor(() => wifiPixel(10, 156) === main, 'connected network was not sorted first');
         click(wifiPanel.absX() + 382, wifiPanel.absY() + 333);
@@ -889,8 +913,34 @@ fi
         await waitFor(() => fs.existsSync(nmcliLog), 'Wi-Fi connect arguments');
         assert.deepEqual(fs.readFileSync(nmcliLog, 'utf8').trim().split('\n'),
             ['device', 'wifi', 'connect', 'HomeNet', 'ifname', 'wlp2s0']);
-        click(wifiPanel.absX() + 520, wifiPanel.absY() + 12);
+        server.injectPointerMove(wifiPanel.absX() + 520, wifiPanel.absY() + 12);
+        await waitFor(() => wifiPixel(530, 5) === 0x001500, 'Wi-Fi Close hover inversion');
+        server.injectButton(1, true); server.injectButton(1, false);
         await waitFor(() => !wifiPanel.mapped, 'Wi-Fi panel close');
+
+        click(265, 586);
+        const sysmonPanel = await waitFor(() => server.root.children.find(w =>
+            w.width === 540 && w.height === 390 && w.mapped), 'SysMon panel');
+        const sysmonPixel = (x, y) => sysmonPanel.raster.data[y * sysmonPanel.width + x] & 0xffffff;
+        server.injectPointerMove(sysmonPanel.absX() + 520, sysmonPanel.absY() + 12);
+        await waitFor(() => sysmonPixel(530, 5) === 0x001500, 'SysMon Close hover inversion');
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => !sysmonPanel.mapped, 'SysMon panel close');
+
+        // Super+F1/F2/F3 are non-conflicting fallbacks for keyboards whose
+        // firmware does not emit XF86AudioMute/LowerVolume/RaiseVolume.
+        for (const code of [67, 68, 69]) {
+            server.injectKey(133, true); // Super_L
+            await key(code);
+            server.injectKey(133, false);
+        }
+        const mediaLog = `${nmcliLog}.media`;
+        await waitFor(() => fs.existsSync(mediaLog) &&
+            fs.readFileSync(mediaLog, 'utf8').trim().split('\n').length >= 3,
+            'configurable media-key commands');
+        const mediaActions = fs.readFileSync(mediaLog, 'utf8').trim().split('\n');
+        assert.equal(mediaActions.length, 3, 'media key was lost or executed more than once');
+        assert.deepEqual(mediaActions.sort(), ['down', 'mute', 'up']);
         assert.equal(wm.exitCode, null, `WM exited during standalone Files/Wi-Fi checks: ${wmLog}`);
 
         // A non-core .desktop pin gives both surfaces the same real process
@@ -907,7 +957,8 @@ fi
         wm = spawn(path.join(repo, 'scoswm'), [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         wm.stdout.on('data', b => wmLog += b);
         wm.stderr.on('data', b => wmLog += b);
-        await waitFor(() => server.root.children.find(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
+        const multiBar = await waitFor(() => server.root.children.find(w =>
+            w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
             'multi-instance taskbar');
         const multiClients = () => [...server.resources.values()].filter(res =>
             res.type === 'window' && res.parent && res.parent.id !== 1 &&
@@ -936,11 +987,16 @@ fi
         const instances = multiClients();
         const oldest = instances[0], middle = instances[1], newest = instances[2];
         await waitFor(() => activeWindow() === newest.id, 'new taskbar instance focused');
+        const multiRule = await waitFor(() => server.root.children.find(w =>
+            property(server, w, 'WM_NAME') === 'SCosWM desktop right rule' && w.mapped),
+            'multi-instance right rule');
 
         // Right-clicking Windows shows the real clients in an MRU overview.
         // The newest window occupies the large upper-left tile; two other
         // clients surround it on the right. The 32px outer margin is clean.
         const openOverview = async () => {
+            await waitFor(() => !server.grabs.pointer,
+                'taskbar pointer grab settles before another overview gesture');
             click(100, 586, 3);
             return waitFor(() => server.root.children.find(w =>
                 property(server, w, 'WM_NAME') === 'SCosWM window overview' && w.mapped),
@@ -948,17 +1004,25 @@ fi
         };
         let overview = await openOverview();
         assert.equal(overview.width, 800);
-        assert.equal(overview.height, 600);
+        assert.equal(overview.height, 572, 'overview must leave the taskbar uncovered');
+        assert.equal(multiBar.mapped, true, 'taskbar hidden while overview is open');
+        assert.equal(multiRule.mapped, false, 'desktop right rule was not hidden with the overview');
+        assert.ok(server.root.children.indexOf(multiBar) > server.root.children.indexOf(overview),
+            'taskbar stacked below overview');
         const overviewPixel = (x, y) => overview.raster.data[y * overview.width + x] & 0xffffff;
         await waitFor(() => overviewPixel(32, 80) === main, 'largest upper-left overview tile');
         assert.equal(overviewPixel(481, 80), main, 'second overview tile');
-        assert.equal(overviewPixel(481, 324), main, 'third overview tile');
-        server.compose();
-        assert.equal(rootPixel(10, 10), overviewPixel(10, 10), 'overview does not cover clean outer margin');
-        assert.notEqual(rootPixel(10, 10), main, 'desktop grid/icon painted in overview margin');
+        assert.equal(overviewPixel(481, 310), main, 'third overview tile above taskbar');
+        assert.equal(overviewPixel(464, 100), main, 'right side of overview tile is not green');
+        assert.notEqual(overviewPixel(10, 10), overviewPixel(10, 550),
+            'overview wallpaper gradient is missing');
+        assert.equal(overviewPixel(10, 64), overviewPixel(20, 64),
+            'overview wallpaper grid is missing from the clean margin');
+        assert.notEqual(overviewPixel(10, 64), main,
+            'desktop icon or tile painted in overview margin');
         click(550, 150); // second MRU tile: middle instance
-        await waitFor(() => !overview.mapped && activeWindow() === middle.id,
-            'overview tile activates its real window');
+        await waitFor(() => !overview.mapped && activeWindow() === middle.id && multiRule.mapped,
+            'overview tile activates its real window and restores the rule');
         assert.equal(multiClients().length, 3, 'overview activation closed or spawned a client');
 
         overview = await openOverview();
@@ -966,10 +1030,27 @@ fi
         await waitFor(() => !overview.mapped && activeWindow() === newest.id,
             'overview tiles did not refresh to MRU order');
         overview = await openOverview();
-        click(400, 300, 3);
-        await waitFor(() => !overview.mapped, 'right-click closes visual overview');
+        click(100, 586, 3); // the same taskbar button toggles the overview shut
+        await waitFor(() => !overview.mapped && multiRule.mapped,
+            'Windows taskbar button closes visual overview');
         assert.equal(activeWindow(), newest.id, 'closing overview changed active window');
         assert.equal(multiClients().length, 3, 'right-click overview close affected a client');
+
+        overview = await openOverview();
+        await clickShortcut(185, 586); // taskbar action closes overview, then activates MRU match
+        await waitFor(() => !overview.mapped && activeWindow() === newest.id,
+            'taskbar pin did not activate normally after overview');
+        assert.equal(multiClients().length, 3, 'taskbar pin spawned a client while closing overview');
+
+        overview = await openOverview();
+        click(25, 586); // Start is another ordinary taskbar action
+        const overviewLauncher = await waitFor(() => server.root.children.find(w =>
+            w.width === 300 && w.height === 308 && w.mapped),
+            'launcher opens normally after closing overview');
+        assert.equal(overview.mapped, false, 'Start left the overview open');
+        click(25, 586);
+        await waitFor(() => !overviewLauncher.mapped, 'launcher closes after overview taskbar test');
+        assert.equal(multiClients().length, 3, 'Start taskbar action affected application instances');
 
         // Minimise newest to oldest. Each minimisation focuses the next
         // visible instance, so once all three are minimised the oldest is the
@@ -1011,9 +1092,10 @@ fi
         console.log('graphical launcher: 250 apps, separate PNG cache entries and 600 wheel events OK');
         console.log('graphical terminal: real Bash/arrows use incremental rows; long-title Close remains visible/clickable OK');
         console.log('graphical standalone Files: real navigation, New Folder, rename and KDE-class application lifetime OK');
-        console.log('graphical Wi-Fi: nonblocking scan, active-first rows, scrolling and per-ifname connect arguments OK');
+        console.log('graphical Wi-Fi: nonblocking scan, active-first rows, hover, scrolling and per-ifname connect arguments OK');
+        console.log('graphical media keys: configurable Super+F1/F2/F3 mute/down/up commands execute once each OK');
         console.log('graphical shortcuts: desktop/taskbar double-click multi-instance and single-click last-window activation OK');
-        console.log('graphical overview: three real MRU tiles, clean margin, activation and right-click dismissal OK');
+        console.log('graphical overview: wallpaper, green borders, taskbar stacking/actions and repeated MRU dismissal OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);

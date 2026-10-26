@@ -1,10 +1,11 @@
 # scoswm — SCos-styled X11 window manager for real Linux applications.
-# Only hard dependencies: libX11, libXext (SHAPE input regions), zlib and
-# the POSIX PTY interface. No compositor, toolkit or terminal library.
+# Only hard link dependencies: libX11, libXext (SHAPE input regions), zlib and
+# the POSIX PTY interface. libXcomposite is dlopened only for overview captures.
+# No compositor, toolkit or terminal library.
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.7"'
+CPPFLAGS += -DVERSION='"0.5.8"'
 LDLIBS    = -lX11 -lz -ldl
 WM_LDLIBS = -lX11 -lXext -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl

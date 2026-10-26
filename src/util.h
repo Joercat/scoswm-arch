@@ -29,6 +29,14 @@ struct scos_config {
     char terminal[160];    /* "" = auto-detect */
     char files[160];       /* "" = bundled scos-files; explicit command overrides */
     char font[160];        /* X core font name, "" = WM default list */
+    char volume_mute_cmd[160];   /* empty = wpctl/pactl/amixer auto-detect */
+    char volume_down_cmd[160];
+    char volume_up_cmd[160];
+    char media_play_pause_cmd[160]; /* empty = playerctl auto-detect */
+    char media_next_cmd[160];
+    char media_previous_cmd[160];
+    char brightness_up_cmd[160];    /* empty = brightnessctl/light auto-detect */
+    char brightness_down_cmd[160];
     char pins[1024];       /* taskbar: comma-separated .desktop ids or commands */
     char desktop_pins[1024]; /* independent desktop shortcuts; may explicitly be empty */
     char desktop_slots[512]; /* comma-separated grid slots parallel to desktop_pins */

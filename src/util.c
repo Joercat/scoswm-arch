@@ -103,6 +103,14 @@ int config_load_file(const char *path, struct scos_config *cfg)
         else if (!strcmp(key, "terminal")) set_str(cfg->terminal, sizeof(cfg->terminal), val);
         else if (!strcmp(key, "files")) set_str(cfg->files, sizeof(cfg->files), val);
         else if (!strcmp(key, "font")) set_str(cfg->font, sizeof(cfg->font), val);
+        else if (!strcmp(key, "volume_mute_cmd")) set_str(cfg->volume_mute_cmd, sizeof(cfg->volume_mute_cmd), val);
+        else if (!strcmp(key, "volume_down_cmd")) set_str(cfg->volume_down_cmd, sizeof(cfg->volume_down_cmd), val);
+        else if (!strcmp(key, "volume_up_cmd")) set_str(cfg->volume_up_cmd, sizeof(cfg->volume_up_cmd), val);
+        else if (!strcmp(key, "media_play_pause_cmd")) set_str(cfg->media_play_pause_cmd, sizeof(cfg->media_play_pause_cmd), val);
+        else if (!strcmp(key, "media_next_cmd")) set_str(cfg->media_next_cmd, sizeof(cfg->media_next_cmd), val);
+        else if (!strcmp(key, "media_previous_cmd")) set_str(cfg->media_previous_cmd, sizeof(cfg->media_previous_cmd), val);
+        else if (!strcmp(key, "brightness_up_cmd")) set_str(cfg->brightness_up_cmd, sizeof(cfg->brightness_up_cmd), val);
+        else if (!strcmp(key, "brightness_down_cmd")) set_str(cfg->brightness_down_cmd, sizeof(cfg->brightness_down_cmd), val);
         else if (!strcmp(key, "pins")) set_str(cfg->pins, sizeof(cfg->pins), val);
         else if (!strcmp(key, "desktop_pins")) {
             set_str(cfg->desktop_pins, sizeof(cfg->desktop_pins), val);
@@ -154,6 +162,14 @@ int config_save_file(const char *path, const struct scos_config *cfg)
     fprintf(f, "terminal = %s\n", cfg->terminal);
     fprintf(f, "files = %s\n", cfg->files);
     fprintf(f, "font = %s\n", cfg->font);
+    fprintf(f, "volume_mute_cmd = %s\n", cfg->volume_mute_cmd);
+    fprintf(f, "volume_down_cmd = %s\n", cfg->volume_down_cmd);
+    fprintf(f, "volume_up_cmd = %s\n", cfg->volume_up_cmd);
+    fprintf(f, "media_play_pause_cmd = %s\n", cfg->media_play_pause_cmd);
+    fprintf(f, "media_next_cmd = %s\n", cfg->media_next_cmd);
+    fprintf(f, "media_previous_cmd = %s\n", cfg->media_previous_cmd);
+    fprintf(f, "brightness_up_cmd = %s\n", cfg->brightness_up_cmd);
+    fprintf(f, "brightness_down_cmd = %s\n", cfg->brightness_down_cmd);
     fprintf(f, "pins = %s\n", cfg->pins);
     fprintf(f, "desktop_pins = %s\n", cfg->has_desktop_pins ? cfg->desktop_pins : cfg->pins);
     fprintf(f, "desktop_slots = %s\n", cfg->desktop_slots);

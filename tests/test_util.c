@@ -115,6 +115,9 @@ int main(void)
     config_defaults(&cfg);
     strcpy(cfg.theme, "blue-sky");
     strcpy(cfg.terminal, "alacritty");
+    strcpy(cfg.volume_up_cmd, "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+");
+    strcpy(cfg.media_play_pause_cmd, "playerctl play-pause");
+    strcpy(cfg.brightness_down_cmd, "brightnessctl set 5%-");
     strcpy(cfg.pins, "terminal,files,sysmon,settings,firefox");
     strcpy(cfg.desktop_pins, "terminal,settings");
     strcpy(cfg.desktop_slots, "7,2");
@@ -127,6 +130,9 @@ int main(void)
     config_defaults(&cfg);
     CHECK(config_load_file(path, &cfg) >= 4);
     CHECK(!strcmp(cfg.theme, "blue-sky") && !strcmp(cfg.terminal, "alacritty"));
+    CHECK(!strcmp(cfg.volume_up_cmd, "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+"));
+    CHECK(!strcmp(cfg.media_play_pause_cmd, "playerctl play-pause"));
+    CHECK(!strcmp(cfg.brightness_down_cmd, "brightnessctl set 5%-"));
     CHECK(cfg.bar_height == 44 && strstr(cfg.pins, "sysmon") != NULL);
     CHECK(cfg.has_desktop_pins && !strcmp(cfg.desktop_pins, "terminal,settings"));
     CHECK(!strcmp(cfg.desktop_slots, "7,2"));

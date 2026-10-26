@@ -45,3 +45,15 @@ desktop_grid = 1
 
 # Taskbar height (SCos used 40).
 bar_height = 40
+
+# Hardware/media-key actions. Empty values auto-detect wpctl/pactl/amixer,
+# playerctl, and brightnessctl/light respectively. Set explicit shell
+# commands to integrate another audio/player/brightness stack.
+volume_mute_cmd =
+volume_down_cmd =
+volume_up_cmd =
+media_play_pause_cmd =
+media_next_cmd =
+media_previous_cmd =
+brightness_up_cmd =
+brightness_down_cmd =

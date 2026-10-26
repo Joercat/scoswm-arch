@@ -19,13 +19,13 @@ it could only run SCos's built-in apps.
 |---|---|
 | `theme.c` four palettes | Copied verbatim into `src/util.c` (`scos_themes[]`), unit-tested; config can also define a custom palette field-by-field |
 | `wm.c` 26 px titlebar, 18 px min/max/close, accent when focused, `color_blend` when not | Same geometry and colours in `src/scoswm.c: draw_frame()`; buttons act on the real client window (ICCCM `WM_DELETE_WINDOW`, EWMH state for maximise/minimise) |
-| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()` plus a compact numeric date and lightweight Wi-Fi button; only permanent pins occupy the main bar. Left-click lists real running windows; right-click opens an on-demand MRU visual overview with captured tiles, title/icon fallbacks and a clean outer margin |
+| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()` plus a core-font numeric date and lightweight Wi-Fi button; only permanent pins occupy the main bar. Left-click lists real running windows; right-click opens an on-demand MRU visual overview with captured tiles, wallpaper, green borders and a clean outer margin. The taskbar remains above the overview and ordinary taskbar actions close it before proceeding |
 | Launcher grid + `user/apps` | Launcher panel over the taskbar indexing freedesktop `.desktop` files, type-to-search — the Linux-native equivalent |
 | Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
 | Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff. Every disruptive action has a Cancel-default confirmation; Lock remains immediate |
 | Settings app | Built-in lightweight panel: live theme/taskbar changes, Terminal/Files/Pins editing, saved to `~/.config/scoswm/scoswm.conf` |
 | SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal is the standalone `scos-terminal` Xlib/PTY application running real Bash; Files is the standalone original-style `scos-files` X11/POSIX application (with an explicit external-command override); SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
-| No original network stack | Native per-adapter wireless status plus optional asynchronous `nmcli` scan/connect. Rows retain interface names and simultaneous active connections; hosted AP mode is detected separately from client connections and active rows sort first. No network daemon is embedded. |
+| No original network stack | Native per-adapter wireless status plus optional asynchronous `nmcli` scan/connect. Rows retain interface names and simultaneous active connections; same-interface/nonempty-SSID BSSID duplicates merge while different adapters and hidden SSIDs stay distinct. Hosted AP mode is detected separately from client connections and active rows sort first. No network daemon is embedded. |
 
 ## Protocol coverage
 
@@ -42,7 +42,7 @@ EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 `_NET_WM_STATE` (maximized/fullscreen/hidden), window types
 (dock/desktop/notification left unmanaged; ordinary and utility windows
 are reachable from the Windows picker). Root supports RandR-driven resize
-via its ConfigureNotify. The six-pixel right desktop rule uses a small
+via its ConfigureNotify. The two-pixel right desktop rule uses a small
 WM-owned override-redirect surface above ordinary frames, with an empty
 X SHAPE input region so it cannot intercept application clicks. If SHAPE is
 unavailable, the overlay stays unmapped and the wallpaper fallback remains.
@@ -58,6 +58,15 @@ for clients and pins. Text uses core fonts rather than Xft/fontconfig;
 WM titles are converted UTF-8 → Latin-1, while the terminal uses an
 ISO10646 font when available for its Unicode cell grid.
 
+Overview capture dynamically uses libXcomposite when available: an existing
+compositor's named pixmap is read directly; otherwise a window is redirected
+only around the synchronous capture and immediately unredirected. Channel
+masks are converted between 32-bit client visuals and the thumbnail visual.
+This is short-lived thumbnail capture, not a persistent compositor or idle
+rendering loop. Hardware XF86 audio/playback/brightness keys and
+Super+F1/F2/F3 volume fallbacks run configurable external commands, with
+wpctl/pactl/amixer, playerctl and brightnessctl/light auto-detection.
+
 ## Verification
 
 - `make check`: unit tests for everything X-independent, including the
@@ -70,9 +79,11 @@ ISO10646 font when available for its Unicode cell grid.
   `sidorares/node-x11` checkout containing `lib/xserver`. Coverage includes
   buffered drawing, compact date/Wi-Fi geometry, all five power-action
   confirmation cancellations, high-contrast selection states, taskbar
-  stacking, and the right rule both above a covering application and
-  click-through via its empty SHAPE input region. Three real clients check
-  the MRU visual overview, tile activation and dismissal. Retained checks
+  stacking, panel hover interiors, configurable media commands, and the
+  two-pixel right rule both above a covering application and click-through
+  via its empty SHAPE input region. Three real clients check MRU overview
+  tiles, wallpaper/borders, taskbar stacking/actions, repeated dismissal and
+  tile activation. Retained checks
   cover the pinned-only bar, resize-free minimise/restore, 20 window-reuse
   cycles, built-in images, Qt/GTK cursor publication, terminal repaint and
   long-title Close behavior, standalone Files navigation/create/rename,

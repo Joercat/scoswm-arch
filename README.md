@@ -54,8 +54,12 @@ The hard shared-library runtime dependencies are `libX11`, `libXext`
 (used for the click-through SHAPE input region on the desktop rule) and
 zlib (used to decode standard PNG app icons) — on Debian those are the
 `libx11-6`/`libxext6`/`zlib1g` packages, pulled in automatically by the `.deb`.
-SVG icon support is optional through the recommended gdk-pixbuf/librsvg
-packages. The terminal uses the system's PTY support and Bash; no Konsole,
+The packages also depend on `libXcomposite` (`libxcomposite6` on Debian)
+for reliable overview thumbnails of obscured application windows. It is
+loaded on demand; there is still no compositor, and a manual installation
+without it falls back to direct X11 captures. SVG icon support is optional
+through the recommended gdk-pixbuf/librsvg packages. The terminal uses the
+system's PTY support and Bash; no Konsole,
 VTE, or other terminal-emulation library is embedded or required.
 
 ## Install
@@ -139,12 +143,14 @@ startx
 | Arrange shortcuts | Drag a desktop icon to snap it to the nearest grid slot. Drag taskbar icons to reorder them, or drag in either direction between the desktop and taskbar to move a shortcut. The snap outline/insertion marker previews the drop and the layout is saved |
 | Select desktop icons | Click an icon, or click-hold-drag empty desktop to paint a rubber-band selection rectangle. Right-click empty desktop for the normal desktop menu |
 | Window list | Left-click **Windows N**. Running windows appear only in this picker and the visual overview, with their real icons; the main taskbar keeps only your pinned shortcuts |
-| Visual window overview | Right-click **Windows N** to show every open window as an on-demand captured tile (title/icon fallback when capture is unavailable). The most recently active window is largest at upper left, with a clean icon-free outer margin. Click a tile to focus it; right-click or press `Esc` to close |
+| Visual window overview | Right-click **Windows N** to show every open window as an on-demand Composite/direct-captured tile over the normal wallpaper (title/icon fallback when capture is unavailable). The most recently active window is largest at upper left, with green tile borders and a clean icon-free outer margin. The taskbar stays visible: right-click **Windows N** again to close, or use another taskbar action to close the overview and perform that action. Click a tile to focus it; `Esc` also closes |
 | Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
 | Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click the titlebar for a menu. Restore minimised windows from **Windows N**; minimise/restore transitions target that picker and never resize the real application |
 | Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
+| Mute / volume down / volume up | Dedicated `XF86AudioMute` / `XF86AudioLowerVolume` / `XF86AudioRaiseVolume` keys (including Fn combinations that emit them), or `Super+F1` / `Super+F2` / `Super+F3`. Plain F1–F3 remain application keys |
+| Playback / brightness | Standard play/pause, next, previous and monitor-brightness keys; playback uses `playerctl`, brightness uses `brightnessctl` or `light` when installed |
 | Wi-Fi | Click the taskbar antenna to see separate joined-network/hosted-hotspot counts and per-card status, scan, choose an active-first per-device network row, enter a password and connect; `F5` rescans and the wheel scrolls network rows |
 | Close focused window | `Alt+F4` or `Super+Q` |
 | Minimise / maximise focused | `Alt+F9` / `Alt+F10` |
@@ -257,8 +263,11 @@ all detected wireless adapters and their current SSIDs independently.
 When NetworkManager's `nmcli` is installed, Scan and Connect run in a
 nonblocking child process. Each result retains its interface name, so two
 cards connected to the same SSID remain two rows and simultaneous active
-connections are not collapsed into one global network. Connected rows sort
-first. A hosted AP is labelled **H / hosted hotspot**, counted separately
+connections are not collapsed into one global network. Repeated scan/BSSID
+rows for the same nonempty SSID on the same card are merged, retaining the
+strongest signal and active/security details; different cards and hidden
+SSIDs stay distinct. Connected rows sort first. A hosted AP is labelled
+**H / hosted hotspot**, counted separately
 from joined networks, and cannot accidentally be used as a Connect target.
 Select a row to choose its card; Enter/Connect uses that row's `ifname`
 and the password field for secured networks.
@@ -291,6 +300,14 @@ desktop_slots = 0,1,2,3    # maintained automatically by desktop dragging
 desktop_icon_size = 24     # 24, 32 or 48
 desktop_grid = 1
 bar_height = 40
+volume_mute_cmd =          # empty = wpctl, pactl or amixer
+volume_down_cmd =
+volume_up_cmd =
+media_play_pause_cmd =     # empty = playerctl
+media_next_cmd =
+media_previous_cmd =
+brightness_up_cmd =        # empty = brightnessctl or light
+brightness_down_cmd =
 ```
 
 The built-in **Settings** panel applies themes, taskbar height, desktop
@@ -301,6 +318,12 @@ independent, and an explicitly empty `desktop_pins =` stays empty. The
 power/desktop menus have a **Restart WM** entry that keeps your
 windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 `scoswm-session`.
+
+Media command values are optional explicit shell commands. Empty values
+auto-detect `wpctl`/`pactl`/`amixer` for volume, `playerctl` for playback,
+and `brightnessctl`/`light` for brightness, without adding a settings or
+media daemon. If a laptop's Fn chord does not emit the standard XF86
+keysym, use the documented Super+F1/F2/F3 volume fallbacks instead.
 
 There are deliberately **no multiple workspaces**: one workspace, no
 pager, no workspace daemon and no extra background process.
@@ -325,7 +348,8 @@ runs unit tests for the pure logic (SCos theme values, config and
 emulation checks, a real interactive-Bash PTY integration test, real
 temporary-directory Files operations, and multi-adapter/escaped-nmcli
 Wi-Fi parsing/merging. Wi-Fi cases include simultaneous client rows,
-hosted-hotspot synthesis and stable active-first ordering. These tests do
+same-interface BSSID deduplication, hosted-hotspot synthesis and stable
+active-first ordering. These tests do
 not need an X server. When Xvfb is available, the suite also boots the WM,
 manages a real Xlib client (`tests/testclient.c`) and verifies adoption
 through the window tree (`tests/xprobe.c`); otherwise that step reports
@@ -335,11 +359,12 @@ SKIP.
 when a `node-x11` checkout with `lib/xserver` is available (set
 `SCOSWM_NODE_X11=/path/to/node-x11`). It checks the compact two-row date,
 Wi-Fi arc/dot geometry, 28 px taskbar bounds, power glyph and confirmation
-cancellation, high-contrast selections, close hover and dock stacking.
-The six-pixel right rule is checked above a covering real application and
-its empty SHAPE input region is checked by clicking a Files Close control
-beneath those visible pixels. Three real clients exercise the MRU visual
-overview, tile activation, clean outer margin and right-click dismissal.
+cancellation, high-contrast selections, panel-hover interiors,
+configurable media commands and dock stacking. The two-pixel right rule is
+checked above a covering real application and its empty SHAPE input region
+is checked by clicking a Files Close control beneath those visible pixels.
+Three real clients exercise the MRU visual overview, wallpaper, green tile
+borders, taskbar visibility/actions, repeated dismissal and tile activation.
 
 Existing coverage retains the pinned-only taskbar, resize-free
 minimise/restore, 20 rapid window-withdrawal/reuse cycles, all built-in

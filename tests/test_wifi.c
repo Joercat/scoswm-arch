@@ -25,12 +25,13 @@ int main(void)
     struct wifi_network networks[8];
     const char *nm =
         "*:Home\\:Net:82:WPA2:wlp1s0\n"
+        ":Home\\:Net:65:WPA2:wlp1s0\n" /* duplicate BSSID on the same card */
         "*:Home\\:Net:71:WPA2:wlp2s0\n"
         ":Coffee \\\\ Guest:55:--:wlp1s0\n";
     count = wifi_parse_nmcli_networks(nm, networks, 8);
     CHECK(count == 3);
     CHECK(networks[0].in_use && networks[1].in_use && !networks[2].in_use);
-    CHECK(!strcmp(networks[0].ssid, "Home:Net"));
+    CHECK(!strcmp(networks[0].ssid, "Home:Net") && networks[0].signal == 82);
     CHECK(!strcmp(networks[1].ssid, "Home:Net"));
     CHECK(strcmp(networks[0].device, networks[1].device) != 0);
     CHECK(!strcmp(networks[0].device, "wlp1s0"));
@@ -52,6 +53,20 @@ int main(void)
     CHECK(networks[2].hosted && !strcmp(networks[2].ssid, "Cafe Hotspot"));
     CHECK(!strcmp(networks[2].device, "wlp2s0") && networks[2].signal == -1);
     CHECK(!networks[0].hosted && !strcmp(networks[0].device, "wlp1s0"));
+
+    const char *dedup =
+        ":Net:40:--:wlp1s0\n"
+        "*:Net:55:WPA2:wlp1s0\n" /* active state and security arrive later */
+        ":Net:60:WPA2:wlp1s0\n"  /* strongest signal wins */
+        ":Net:70:WPA2:wlp2s0\n"
+        "::50:--:wlp1s0\n"
+        "::60:--:wlp1s0\n";      /* hidden rows are never collapsed */
+    count = wifi_parse_nmcli_networks(dedup, networks, 8);
+    CHECK(count == 4);
+    CHECK(networks[0].in_use && networks[0].signal == 60);
+    CHECK(!strcmp(networks[0].security, "WPA2"));
+    CHECK(!strcmp(networks[1].device, "wlp2s0") && networks[1].signal == 70);
+    CHECK(!networks[2].ssid[0] && !networks[3].ssid[0]);
 
     const char *inactive_first =
         ":Coffee:55:--:wlp1s0\n"

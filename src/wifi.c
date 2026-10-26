@@ -187,6 +187,28 @@ int wifi_parse_nmcli_networks(const char *text, struct wifi_network *out, int ma
         nmcli_field(&cursor, device, sizeof(device), &last);
         while (*cursor == '\r' || *cursor == '\n') cursor++;
         if (!device[0] || !signal[0]) continue;
+        /* NetworkManager may report several BSSIDs for one SSID even though
+         * BSSID is not one of our requested fields. Collapse only the exact
+         * same named network on the same card; another adapter remains a
+         * separate simultaneous connection. Hidden SSIDs are not collapsed. */
+        int duplicate = -1;
+        if (ssid[0]) {
+            for (int i = 0; i < count; i++) {
+                if (!strcmp(out[i].device, device) && !strcmp(out[i].ssid, ssid)) {
+                    duplicate = i; break;
+                }
+            }
+        }
+        if (duplicate >= 0) {
+            struct wifi_network *existing = &out[duplicate];
+            if (!strcmp(active, "*")) existing->in_use = 1;
+            int new_signal = atoi(signal);
+            if (new_signal > existing->signal) existing->signal = new_signal;
+            if ((!existing->security[0] || !strcmp(existing->security, "--")) &&
+                security[0] && strcmp(security, "--"))
+                snprintf(existing->security, sizeof(existing->security), "%s", security);
+            continue;
+        }
         struct wifi_network *network = &out[count++];
         memset(network, 0, sizeof(*network));
         network->in_use = !strcmp(active, "*");

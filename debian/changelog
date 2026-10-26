@@ -1,3 +1,32 @@
+scoswm (0.5.8) unstable; urgency=medium
+
+  * Reduce the visible right desktop rule to two pixels while retaining its
+    buffered above-frame rendering and empty SHAPE input region, so it stays
+    click-through over maximized application controls. Render the compact
+    date with the shared core font and move the Wi-Fi dot down slightly.
+  * Add readable hover/highlight states to Settings fields, themes and
+    controls, Wi-Fi rows/password/Connect/Scan, panel Close buttons, and
+    retain existing menu/taskbar/frame hover behavior.
+  * Merge duplicate nonempty-SSID scan rows only on the same interface,
+    retaining active state, strongest signal and useful security. Preserve
+    distinct adapters, hidden SSIDs and simultaneous client/hosted-hotspot
+    state.
+  * Paint the real gradient/grid wallpaper in the visual overview, capture
+    obscured/32-bit clients through short-lived on-demand libXcomposite
+    redirection when available, convert pixel channel masks correctly, and
+    draw all green tile edges after preview content. Keep the taskbar above
+    the overview; taskbar actions and application activation close it before
+    proceeding, and the Windows right-click toggles it closed.
+  * Handle standard XF86 mute/volume/playback/brightness keys plus
+    Super+F1/F2/F3 volume fallbacks. Add configurable command overrides and
+    wpctl/pactl/amixer, playerctl and brightnessctl/light auto-detection.
+  * Expand unit/graphical regressions for these behaviors and retain prior
+    Files, Bash/PTY, shortcut, power, scrolling and crash coverage. Headless
+    validation does not prove physical preview, display, audio or wireless
+    behavior; target-system retesting remains necessary.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 23:40:21 -0400
+
 scoswm (0.5.7) unstable; urgency=medium
 
   * Rework the right desktop rule as a buffered six-pixel surface stacked
