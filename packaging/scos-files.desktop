@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=SCos Files
+Comment=Browse and manage real Linux files with the SCos desktop's original-style file explorer
+Exec=scos-files %f
+TryExec=scos-files
+Icon=scos-files
+Terminal=false
+StartupNotify=true
+StartupWMClass=SCosFiles
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=files;folder;directory;explorer;SCos;

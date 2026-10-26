@@ -39,6 +39,15 @@ grep -qx 'Exec=scos-terminal' "$app" || { echo "FAIL: terminal desktop entry doe
 grep -qx 'Terminal=false' "$app" || { echo "FAIL: graphical terminal must not be nested in another terminal"; exit 1; }
 grep -qx 'Icon=scos-terminal' "$app" || { echo "FAIL: terminal uses a generic icon"; exit 1; }
 grep -qx 'StartupWMClass=SCosTerminal' "$app" || { echo "FAIL: terminal KDE window class is not mapped"; exit 1; }
+files_app="$tmp/usr/share/applications/scos-files.desktop"
+[ -f "$files_app" ] || { echo "FAIL: no standalone SCos Files desktop entry installed"; exit 1; }
+[ -x "$tmp/usr/bin/scos-files" ] || { echo "FAIL: scos-files binary not installed"; exit 1; }
+grep -qx 'Name=SCos Files' "$files_app" || { echo "FAIL: Files desktop entry has the wrong name"; exit 1; }
+grep -qx 'Exec=scos-files %f' "$files_app" || { echo "FAIL: Files entry does not pass one local directory"; exit 1; }
+grep -qx 'TryExec=scos-files' "$files_app" || { echo "FAIL: Files TryExec is not scos-files"; exit 1; }
+grep -qx 'Icon=scos-files' "$files_app" || { echo "FAIL: Files uses a generic icon"; exit 1; }
+grep -qx 'StartupWMClass=SCosFiles' "$files_app" || { echo "FAIL: Files KDE window class is not mapped"; exit 1; }
+grep -qx 'MimeType=inode/directory;' "$files_app" || { echo "FAIL: Files is not a directory handler"; exit 1; }
 for size in 16x16 22x22 24x24 32x32 48x48 64x64 128x128 256x256; do
     for name in scos-terminal scos-files scos-sysmon scos-settings; do
         icon="$tmp/usr/share/icons/hicolor/$size/apps/$name.png"
@@ -63,6 +72,6 @@ grep -qxF 'export XCURSOR_SIZE=${SCOS_CURSOR_SIZE:-24}' "$tmp/usr/bin/scoswm-ses
 }
 
 echo "SDDM session check: SCosWM will be listed and launchable ($entry)"
-echo "Standalone application check: SCos Terminal is available to other desktops ($app)"
-echo "Application identity check: four built-in icon sets and terminal KDE window class installed"
+echo "Standalone application check: SCos Terminal and SCos Files are available to other desktops"
+echo "Application identity check: four built-in icon sets and both KDE window classes installed"
 echo "Cursor check: SCos Xcursor theme, aliases and session selection installed"

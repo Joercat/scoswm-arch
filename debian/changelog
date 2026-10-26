@@ -1,3 +1,24 @@
+scoswm (0.5.5) unstable; urgency=medium
+
+  * Bundle the original-style scos-files X11/POSIX file manager and make it
+    the default Files action, with real navigation, folder creation,
+    non-overwriting rename, desktop opening, a KDE desktop entry and icons.
+    Retain explicit external-manager overrides and their launch regressions.
+  * Repaint only changed terminal rows during Bash/readline echo and arrow
+    movement, preserve full Expose/resize fallbacks, and ellipsize long tab
+    titles before the visible, clickable Close control.
+  * Add a dedicated override-redirect right-rule surface instead of relying
+    only on root wallpaper pixels, retaining the existing inset and fallback.
+  * Add a lightweight taskbar Wi-Fi panel with native per-adapter status,
+    simultaneous-connection rows, scrolling, nonblocking nmcli scan/connect,
+    and explicit per-interface connection arguments. NetworkManager remains
+    optional for Arch and Debian and no network daemon is added to SCosWM.
+  * Add real-directory, multi-adapter parser, standalone Files UI, incremental
+    terminal, long-title Close, dedicated-rule and delayed fake-nmcli tests;
+    preserve all prior scrolling, crash, withdrawal and drag/drop checks.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 21:21:21 -0400
+
 scoswm (0.5.4) unstable; urgency=medium
 
   * Make taskbar and desktop shortcuts independent, with one-time legacy

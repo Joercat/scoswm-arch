@@ -27,7 +27,7 @@ struct scos_config {
     unsigned int custom[7];/* main,bg_top,bg_bot,win_bg,text,title_text,taskbar_bg */
     int has_custom;
     char terminal[160];    /* "" = auto-detect */
-    char files[160];       /* "" = auto-detect, used by the Files pin */
+    char files[160];       /* "" = bundled scos-files; explicit command overrides */
     char font[160];        /* X core font name, "" = WM default list */
     char pins[1024];       /* taskbar: comma-separated .desktop ids or commands */
     char desktop_pins[1024]; /* independent desktop shortcuts; may explicitly be empty */

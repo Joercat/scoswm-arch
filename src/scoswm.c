@@ -50,9 +50,10 @@
 #include <unistd.h>
 
 #include "util.h"
+#include "wifi.h"
 
 #ifndef VERSION
-#define VERSION "0.5.4"
+#define VERSION "0.5.5"
 #endif
 
 #define TITLE_H 26
@@ -67,7 +68,7 @@
 /* ------------------------------------------------------------------ state */
 static Display *dpy;
 static int scr_no;
-static Window root, wmcheck, xsettings_win, bar_win, launch_win, menu_win, tool_win, anim_win;
+static Window root, wmcheck, xsettings_win, bar_win, edge_win, launch_win, menu_win, tool_win, anim_win;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -153,6 +154,24 @@ static int bar_hover = -1;          /* -1 none, >=0 bar_items idx, -2 start, -3 
 static int bar_press = -1;          /* bar_items idx held down, -1 none */
 static int bar_flash_pin = -1;      /* pin idx showing launch feedback */
 static time_t bar_flash_until;
+
+#define WIFI_MAX_ADAPTERS 32
+#define WIFI_MAX_NETWORKS 64
+#define WIFI_VISIBLE_NETWORKS 6
+#define WIFI_NETWORK_Y 156
+static struct wifi_adapter wifi_adapters[WIFI_MAX_ADAPTERS];
+static int wifi_adapter_count, wifi_connected_count;
+static struct wifi_network wifi_networks[WIFI_MAX_NETWORKS];
+static int wifi_network_count, wifi_selected = -1, wifi_network_scroll;
+static int wifi_password_editing;
+static char wifi_password[128], wifi_status[192] = "Click Scan to discover networks";
+static struct {
+    int fd, kind;                 /* 1 scan, 2 connect */
+    pid_t pid;
+    size_t length;
+    char output[65536];
+} wifi_job = { -1, 0, 0, 0, { 0 } };
+
 static struct client *hover_frame_client;
 static int hover_title_btn = -1;
 static Cursor wm_cursor;
@@ -258,10 +277,10 @@ static const char *detect_terminal(void)
 
 static const char *detect_files_exec(void)
 {
-    static const char *const list[] = { "thunar", "pcmanfm", "pcmanfm-qt", "nautilus", "dolphin", "nemo", "caja", NULL };
-    for (int i = 0; list[i]; i++)
-        if (cmd_exists(list[i])) return list[i];
-    return NULL;
+    /* Files is part of this desktop, just like SCos Terminal. Never make
+     * the default depend on whichever third-party file manager happens to
+     * be installed. An explicit cfg.files command remains an override. */
+    return "scos-files";
 }
 
 static void spawn_files_at(const char *path)
@@ -436,6 +455,7 @@ static void draw_desktop(void);
 static void draw_bar(void);
 static void bar_layout(void);
 static int bar_power_x(void);
+static int bar_wifi_x(void);
 static void animate_minimize(struct client *c);
 static void animate_restore(struct client *c);
 static struct xicon *xicon_get(const char *spec, int size);
@@ -448,7 +468,7 @@ static void update_ewmh_client_list(void);
 static void launcher_toggle(int open);
 static void wm_notify_no_windows(void);
 static void menu_close(void);
-enum { TOOL_NONE, TOOL_SETTINGS, TOOL_SYSMON };
+enum { TOOL_NONE, TOOL_SETTINGS, TOOL_SYSMON, TOOL_WIFI };
 static int tool_kind;
 static int tool_release_pending;
 static void tool_open(int kind);
@@ -1080,7 +1100,7 @@ static void shortcuts_saved(const char *what)
 
 static int shortcut_over_taskbar(int x, int y)
 {
-    return y >= screen_h - bar_h && y < screen_h && x >= 168 && x < bar_power_x() - 8;
+    return y >= screen_h - bar_h && y < screen_h && x >= 168 && x < bar_wifi_x() - 8;
 }
 
 static int shortcut_bar_order(int x)
@@ -1533,6 +1553,12 @@ static void icon_rect(int i, int *x, int *y)
     *y = 16 + (slot / cols) * DESK_ROW_H;
 }
 
+static int desktop_right_rule(void)
+{
+    int x = screen_w > DESK_EDGE_GAP + 3 ? screen_w - DESK_EDGE_GAP - 1 : screen_w - 2;
+    return x < 1 ? 1 : x;
+}
+
 static void paint_desktop(Drawable d)
 {
     /* Paint everything into the supplied drawable. When draw_desktop()
@@ -1551,13 +1577,11 @@ static void paint_desktop(Drawable d)
         for (int x = 0; x < screen_w; x += 64) XDrawLine(dpy, d, gc, x, 0, x, screen_h);
         for (int y = 0; y < screen_h; y += 64) XDrawLine(dpy, d, gc, 0, y, screen_w, y);
     }
-    /* Do not put the right rule in physical overscan. Two previous edge
-     * fixes were still invisible on the user's display, so place a clear
-     * two-pixel rule 16 px inside the desktop, aligned with the enclosing
-     * rectangle rather than the physical screen edge. */
+    /* Keep a wallpaper fallback beneath the dedicated four-pixel edge
+     * surface. The surface is what makes the rule independent of root
+     * background restoration on a physical X server. */
     int desktop_h = screen_h - bar_h;
-    int right_rule = screen_w > DESK_EDGE_GAP + 3 ? screen_w - DESK_EDGE_GAP - 1 : screen_w - 2;
-    if (right_rule < 1) right_rule = 1;
+    int right_rule = desktop_right_rule();
     rect(d, 0, 0, right_rule + 1, desktop_h, PX.main);
     fill(d, right_rule, 0, 2, desktop_h, PX.main);
 
@@ -1654,11 +1678,16 @@ static int bar_power_x(void)
     return screen_w - 100 - 34 - 16;
 }
 
+static int bar_wifi_x(void)
+{
+    return bar_power_x() - 40;
+}
+
 static void bar_layout(void)
 {
     bar_n = 0;
     int x = 168;
-    int end = bar_power_x() - 8;
+    int end = bar_wifi_x() - 8;
     if (end < x) end = x;
 
     /* The main bar contains permanent shortcuts only. Running windows
@@ -1720,10 +1749,26 @@ static void draw_bar(void)
     }
     if (drag.kind == 4 && drag.moved && drag.target_order >= 0) {
         int drop_x = 168 + drag.target_order * 40 - 3;
-        int drop_end = bar_power_x() - 10;
+        int drop_end = bar_wifi_x() - 10;
         if (drop_x > drop_end) drop_x = drop_end;
         fill(d, drop_x, by, 2, bh, PX.main);
     }
+    /* Wi-Fi status: native adapter state, with per-device details and
+     * NetworkManager actions in the panel opened by this button. */
+    int wx = bar_wifi_x();
+    int wifi_lit = bar_hover == -5;
+    fill(d, wx, by, 34, bh, wifi_lit ? PX.main : PX.taskbar_bg);
+    rect(d, wx, by, 34, bh, PX.main);
+    unsigned long wifi_fg = wifi_lit ? PX.title_text :
+        (wifi_connected_count ? PX.main : PX.title_off);
+    XSetForeground(dpy, gc, wifi_fg);
+    XDrawArc(dpy, d, gc, wx + 4, by + 1, 26, 22, 45 * 64, 90 * 64);
+    XDrawArc(dpy, d, gc, wx + 9, by + 6, 16, 15, 45 * 64, 90 * 64);
+    XDrawArc(dpy, d, gc, wx + 13, by + 11, 8, 8, 45 * 64, 90 * 64);
+    XFillRectangle(dpy, d, gc, wx + 15, by + bh - 7, 4, 4);
+    if (!wifi_adapter_count)
+        XDrawLine(dpy, d, gc, wx + 7, by + bh - 5, wx + 27, by + 4);
+
     /* power button */
     int pw = 34, px = bar_power_x();
     int power_lit = bar_hover == -4;
@@ -2281,6 +2326,9 @@ static void on_button(XButtonEvent *e)
             return;
         }
         int pw_x = bar_power_x();
+        if (e->x >= bar_wifi_x() && e->x < bar_wifi_x() + 34 && e->y >= 6 && e->y < bar_h - 6) {
+            tool_open(TOOL_WIFI); return;
+        }
         if (e->x >= pw_x && e->x < pw_x + 34 && e->y >= 6 && e->y < bar_h - 6) {
             menu_open(MENU_POWER, pw_x - 140, screen_h - bar_h - (6 * 24 + 8), None);
             menu_bar_release = 1;
@@ -2549,6 +2597,7 @@ static void on_motion(XMotionEvent *e)
             if (e->y >= 6 && e->y < bar_h - 6) {
                 if (e->x >= 8 && e->x < 42) h = -2;
                 else if (e->x >= 48 && e->x < 158) h = -3;
+                else if (e->x >= bar_wifi_x() && e->x < bar_wifi_x() + 34) h = -5;
                 else if (e->x >= bar_power_x() && e->x < bar_power_x() + 34) h = -4;
                 else {
                     bar_layout();
@@ -2997,8 +3046,20 @@ static void create_ui_windows(void)
 {
     XSetWindowAttributes at;
     at.override_redirect = True;
-    at.background_pixel = PX.taskbar_bg;
     if (wm_cursor) at.cursor = wm_cursor;
+
+    /* Map the rule before the taskbar. Ordinary frames are then inserted
+     * below the taskbar and above this surface, so they still cover the
+     * decoration naturally while the wallpaper alone cannot hide it. */
+    at.background_pixel = PX.main;
+    at.event_mask = 0;
+    edge_win = XCreateWindow(dpy, root, desktop_right_rule(), 0, 4, screen_h - bar_h, 0,
+                             CopyFromParent, InputOutput, CopyFromParent,
+                             CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+    XStoreName(dpy, edge_win, "SCosWM desktop right rule");
+    XMapWindow(dpy, edge_win);
+
+    at.background_pixel = PX.taskbar_bg;
     at.event_mask = ExposureMask | ButtonPressMask | ButtonReleaseMask |
                     PointerMotionMask | LeaveWindowMask;
     bar_win = XCreateWindow(dpy, root, 0, screen_h - bar_h, screen_w, bar_h, 0,
@@ -3090,6 +3151,10 @@ static void redraw_everything(void)
     XSetWindowBackground(dpy, launch_win, PX.win_bg);
     XSetWindowBackground(dpy, menu_win, PX.win_bg);
     XSetWindowBackground(dpy, tool_win, PX.win_bg);
+    if (edge_win) {
+        XSetWindowBackground(dpy, edge_win, PX.main);
+        XClearWindow(dpy, edge_win);
+    }
     for (int i = 0; i < nclients; i++) {
         XSetWindowBackground(dpy, clients[i]->frame, PX.win_bg);
         draw_frame(clients[i]);
@@ -3124,6 +3189,7 @@ static void apply_bar_height_live(int v)
         xicon_destroy_owned(clients[i]->icon);
         clients[i]->icon = client_load_icon(clients[i]);
     }
+    XMoveResizeWindow(dpy, edge_win, desktop_right_rule(), 0, 4, screen_h - bar_h);
     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
     int x, y, w, h; work_area(&x, &y, &w, &h);
     for (int i = 0; i < nclients; i++) {
@@ -3279,12 +3345,154 @@ static void refresh_sysmon(void)
     detect_temperature();
 }
 
+static void wifi_refresh_local(void)
+{
+    wifi_adapter_count = wifi_scan_adapters(wifi_adapters, WIFI_MAX_ADAPTERS);
+    wifi_connected_count = 0;
+    for (int i = 0; i < wifi_adapter_count; i++)
+        if (wifi_adapters[i].connected) wifi_connected_count++;
+}
+
+static void wifi_job_finish(void)
+{
+    if (wifi_job.fd < 0) return;
+    close(wifi_job.fd); wifi_job.fd = -1; wifi_job.pid = 0;
+    wifi_job.output[wifi_job.length] = 0;
+    if (wifi_job.kind == 1) {
+        wifi_network_count = wifi_parse_nmcli_networks(wifi_job.output, wifi_networks, WIFI_MAX_NETWORKS);
+        wifi_selected = -1; wifi_network_scroll = 0;
+        if (wifi_network_count) {
+            snprintf(wifi_status, sizeof(wifi_status), "%d per-device network rows - select one to connect",
+                     wifi_network_count);
+        } else {
+            char *nl = strpbrk(wifi_job.output, "\r\n"); if (nl) *nl = 0;
+            snprintf(wifi_status, sizeof(wifi_status), "%s", wifi_job.output[0] ?
+                     wifi_job.output : "No Wi-Fi networks reported");
+        }
+    } else if (wifi_job.kind == 2) {
+        char *nl = strpbrk(wifi_job.output, "\r\n"); if (nl) *nl = 0;
+        snprintf(wifi_status, sizeof(wifi_status), "%s", wifi_job.output[0] ?
+                 wifi_job.output : "Connection request finished");
+        wifi_refresh_local();
+    }
+    wifi_job.kind = 0;
+    if (tool_kind == TOOL_WIFI) draw_tool();
+    draw_bar();
+}
+
+static void wifi_job_read(void)
+{
+    if (wifi_job.fd < 0) return;
+    for (int round = 0; round < 16; round++) {
+        char buffer[4096];
+        ssize_t n = read(wifi_job.fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            size_t available = sizeof(wifi_job.output) - 1 - wifi_job.length;
+            size_t copy = (size_t)n < available ? (size_t)n : available;
+            memcpy(wifi_job.output + wifi_job.length, buffer, copy);
+            wifi_job.length += copy;
+            continue;
+        }
+        if (n == 0) { wifi_job_finish(); return; }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        wifi_job_finish(); return;
+    }
+}
+
+static int wifi_job_start(int kind, const struct wifi_network *network, const char *password)
+{
+    if (wifi_job.fd >= 0) {
+        snprintf(wifi_status, sizeof(wifi_status), "Another Wi-Fi operation is still running");
+        return 0;
+    }
+    if (!cmd_exists("nmcli")) {
+        snprintf(wifi_status, sizeof(wifi_status),
+                 "nmcli is needed for scan/connect; native adapter status remains available");
+        return 0;
+    }
+    int pipes[2];
+    if (pipe(pipes) != 0) {
+        snprintf(wifi_status, sizeof(wifi_status), "Cannot start Wi-Fi operation: %s", strerror(errno));
+        return 0;
+    }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipes[0]);
+        dup2(pipes[1], STDOUT_FILENO); dup2(pipes[1], STDERR_FILENO);
+        close(pipes[1]); close(ConnectionNumber(dpy));
+        if (kind == 1)
+            execlp("nmcli", "nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY,DEVICE",
+                   "device", "wifi", "list", (char *)NULL);
+        else if (network && password && *password)
+            execlp("nmcli", "nmcli", "device", "wifi", "connect", network->ssid,
+                   "password", password, "ifname", network->device, (char *)NULL);
+        else if (network)
+            execlp("nmcli", "nmcli", "device", "wifi", "connect", network->ssid,
+                   "ifname", network->device, (char *)NULL);
+        dprintf(STDERR_FILENO, "Could not execute nmcli: %s\n", strerror(errno));
+        _exit(127);
+    }
+    if (pid < 0) {
+        close(pipes[0]); close(pipes[1]);
+        snprintf(wifi_status, sizeof(wifi_status), "Cannot start nmcli: %s", strerror(errno));
+        return 0;
+    }
+    close(pipes[1]);
+    int flags = fcntl(pipes[0], F_GETFL, 0);
+    if (flags >= 0) fcntl(pipes[0], F_SETFL, flags | O_NONBLOCK);
+    wifi_job.fd = pipes[0]; wifi_job.kind = kind; wifi_job.pid = pid; wifi_job.length = 0;
+    if (kind == 1) snprintf(wifi_status, sizeof(wifi_status), "Scanning networks without blocking the desktop...");
+    else snprintf(wifi_status, sizeof(wifi_status), "Connecting %.70s on %.20s...",
+                  network->ssid, network->device);
+    return 1;
+}
+
+static void wifi_connect_selected(void)
+{
+    if (wifi_selected < 0 || wifi_selected >= wifi_network_count) {
+        snprintf(wifi_status, sizeof(wifi_status), "Select a network row first");
+        return;
+    }
+    struct wifi_network *network = &wifi_networks[wifi_selected];
+    if (!network->ssid[0] || !network->device[0]) {
+        snprintf(wifi_status, sizeof(wifi_status), "A hidden SSID needs NetworkManager connection settings");
+        return;
+    }
+    int secured = network->security[0] && strcmp(network->security, "--");
+    size_t length = strlen(wifi_password);
+    if (secured && strstr(network->security, "WPA") && length && length < 8) {
+        snprintf(wifi_status, sizeof(wifi_status), "WPA passwords contain at least 8 characters");
+        return;
+    }
+    if (wifi_job_start(2, network, wifi_password)) {
+        wifi_password[0] = 0; wifi_password_editing = 0;
+    }
+}
+
+static void wifi_scroll_networks(int amount)
+{
+    int maximum = wifi_network_count - WIFI_VISIBLE_NETWORKS;
+    if (maximum < 0) maximum = 0;
+    wifi_network_scroll += amount;
+    if (wifi_network_scroll < 0) wifi_network_scroll = 0;
+    if (wifi_network_scroll > maximum) wifi_network_scroll = maximum;
+}
+
+static void wifi_job_stop(void)
+{
+    if (wifi_job.fd >= 0) close(wifi_job.fd);
+    if (wifi_job.pid > 0) kill(wifi_job.pid, SIGHUP);
+    wifi_job.fd = -1; wifi_job.pid = 0; wifi_job.kind = 0;
+}
+
 static void tool_close(void)
 {
     if (tool_kind == TOOL_NONE) return;
     tool_kind = TOOL_NONE;
     tool_release_pending = 0;
     settings_field = 0;
+    wifi_password_editing = 0;
     XUnmapWindow(dpy, tool_win);
     XUngrabKeyboard(dpy, CurrentTime);
 }
@@ -3297,6 +3505,11 @@ static void tool_open(int kind)
     tool_release_pending = 1;
     settings_field = 0;
     if (kind == TOOL_SYSMON) refresh_sysmon();
+    if (kind == TOOL_WIFI) {
+        wifi_password_editing = 0; wifi_selected = -1;
+        wifi_refresh_local();
+        if (wifi_job.fd < 0) wifi_job_start(1, NULL, NULL);
+    }
     int x = (screen_w - TOOL_W) / 2, y = (screen_h - bar_h - TOOL_H) / 2;
     if (x < 4) x = 4;
     if (y < 4) y = 4;
@@ -3328,8 +3541,71 @@ static void draw_tool(void)
     fill(d, 0, 0, TOOL_W, TOOL_H, PX.win_bg);
     rect(d, 0, 0, TOOL_W, TOOL_H, PX.main);
     fill(d, 1, 1, TOOL_W - 2, 25, PX.main);
-    text_out(d, 10, 6 + font->ascent, tool_kind == TOOL_SETTINGS ? "Settings" : "SysMon", PX.title_text);
+    text_out(d, 10, 6 + font->ascent,
+             tool_kind == TOOL_SETTINGS ? "Settings" : tool_kind == TOOL_WIFI ? "Wi-Fi" : "SysMon",
+             PX.title_text);
     draw_button_glyph(d, TOOL_W - 27, 4, 2, PX.title_text);
+
+    if (tool_kind == TOOL_WIFI) {
+        char line[768];
+        snprintf(line, sizeof(line), "%d connected / %d wireless adapters", wifi_connected_count,
+                 wifi_adapter_count);
+        clipped_text(d, 16, 42, line, 508, PX.text);
+        int shown = wifi_adapter_count > 4 ? 3 : wifi_adapter_count;
+        for (int i = 0; i < shown; i++) {
+            struct wifi_adapter *adapter = &wifi_adapters[i];
+            char signal[48] = "";
+            if (adapter->signal_dbm > -1000) snprintf(signal, sizeof(signal), " %d dBm", adapter->signal_dbm);
+            else if (adapter->quality >= 0) snprintf(signal, sizeof(signal), " q%d", adapter->quality);
+            snprintf(line, sizeof(line), "%s  %s%s%s%s", adapter->name,
+                     adapter->connected ? adapter->ssid : (adapter->enabled ? "not connected" : "disabled"),
+                     signal, adapter->address[0] ? "  " : "", adapter->address);
+            clipped_text(d, 16, 62 + i * 20, line, 508,
+                         adapter->connected ? PX.main : PX.text);
+        }
+        if (wifi_adapter_count > 4) {
+            snprintf(line, sizeof(line), "+%d more adapters (all remain available to nmcli)",
+                     wifi_adapter_count - 3);
+            clipped_text(d, 16, 122, line, 508, PX.text);
+        } else if (!wifi_adapter_count) {
+            clipped_text(d, 16, 62, "No native wireless adapter detected", 508, PX.title_off);
+        }
+        text_out(d, 16, 140, "Networks (each row keeps its own card)", PX.main);
+        if (!wifi_network_count)
+            clipped_text(d, 16, WIFI_NETWORK_Y + 18,
+                         wifi_job.kind == 1 ? "Scanning..." : "No scan results", 508, PX.text);
+        for (int i = 0; i < WIFI_VISIBLE_NETWORKS; i++) {
+            int index = wifi_network_scroll + i;
+            if (index >= wifi_network_count) break;
+            struct wifi_network *network = &wifi_networks[index];
+            int y = WIFI_NETWORK_Y + i * 24;
+            int selected = index == wifi_selected;
+            if (selected) fill(d, 8, y, 524, 24, PX.main);
+            snprintf(line, sizeof(line), "%s %.220s  %.18s  %d%%  %.40s",
+                     network->in_use ? "*" : " ", network->ssid[0] ? network->ssid : "<hidden>",
+                     network->device, network->signal, network->security);
+            clipped_text(d, 14, y + 6 + font->ascent, line, 512,
+                         selected ? PX.title_text : PX.text);
+        }
+        text_out(d, 16, 327 + font->ascent, "Password", PX.main);
+        fill(d, 100, 318, 230, 30, wifi_password_editing ? PX.main : PX.win_bg);
+        rect(d, 100, 318, 230, 30, wifi_password_editing ? PX.title_text : PX.main);
+        char masked[128];
+        size_t password_n = strlen(wifi_password);
+        if (password_n >= sizeof(masked)) password_n = sizeof(masked) - 1;
+        memset(masked, '*', password_n); masked[password_n] = 0;
+        clipped_text(d, 108, 327 + font->ascent,
+                     wifi_password_editing ? masked : (password_n ? masked : "(stored/open)"), 214,
+                     wifi_password_editing ? PX.title_text : PX.text);
+        rect(d, 340, 318, 84, 30, PX.main);
+        text_out(d, 354, 327 + font->ascent, "Connect", PX.main);
+        rect(d, 434, 318, 90, 30, PX.main);
+        text_out(d, 457, 327 + font->ascent, "Scan", PX.main);
+        clipped_text(d, 16, 360, wifi_status, 508, PX.text);
+        clipped_text(d, 16, 380, "Multiple cards and simultaneous connections are kept separate; Esc closes", 508, PX.title_off);
+        surface_present(tool_win, pm, TOOL_W, TOOL_H);
+        return;
+    }
 
     if (tool_kind == TOOL_SYSMON) {
         char value[64];
@@ -3430,8 +3706,31 @@ static void draw_tool(void)
 
 static int tool_button(XButtonEvent *e)
 {
-    if (e->type != ButtonPress || e->button != Button1) return 1;
+    if (e->type != ButtonPress) return 1;
+    if (tool_kind == TOOL_WIFI && (e->button == Button4 || e->button == Button5)) {
+        wifi_scroll_networks(e->button == Button4 ? -3 : 3); draw_tool(); return 1;
+    }
+    if (e->button != Button1) return 1;
     if (e->x >= TOOL_W - 30 && e->y < 28) { tool_close(); return 1; }
+    if (tool_kind == TOOL_WIFI) {
+        for (int i = 0; i < WIFI_VISIBLE_NETWORKS; i++) {
+            int index = wifi_network_scroll + i;
+            int y = WIFI_NETWORK_Y + i * 24;
+            if (index < wifi_network_count && e->y >= y && e->y < y + 24) {
+                wifi_selected = index; wifi_password_editing = 0; draw_tool(); return 1;
+            }
+        }
+        if (e->x >= 100 && e->x < 330 && e->y >= 318 && e->y < 348) {
+            wifi_password_editing = 1; draw_tool(); return 1;
+        }
+        if (e->x >= 340 && e->x < 424 && e->y >= 318 && e->y < 348) {
+            wifi_connect_selected(); draw_tool(); return 1;
+        }
+        if (e->x >= 434 && e->x < 524 && e->y >= 318 && e->y < 348) {
+            wifi_job_start(1, NULL, NULL); draw_tool(); return 1;
+        }
+        return 1;
+    }
     if (tool_kind == TOOL_SETTINGS) {
         if (e->y >= 62 && e->y < 102) {
             for (int i = 0; i < scos_theme_count; i++) {
@@ -3470,6 +3769,44 @@ static int tool_button(XButtonEvent *e)
 static int tool_key(XKeyEvent *e)
 {
     KeySym ks = XLookupKeysym(e, 0);
+    if (tool_kind == TOOL_WIFI) {
+        if (ks == XK_Escape) {
+            if (wifi_password_editing) { wifi_password_editing = 0; draw_tool(); }
+            else tool_close();
+            return 1;
+        }
+        if (ks == XK_F5) { wifi_job_start(1, NULL, NULL); draw_tool(); return 1; }
+        if (ks == XK_Up || ks == XK_Down) {
+            if (wifi_network_count) {
+                wifi_selected += ks == XK_Up ? -1 : 1;
+                if (wifi_selected < 0) wifi_selected = 0;
+                if (wifi_selected >= wifi_network_count) wifi_selected = wifi_network_count - 1;
+                if (wifi_selected < wifi_network_scroll) wifi_network_scroll = wifi_selected;
+                if (wifi_selected >= wifi_network_scroll + WIFI_VISIBLE_NETWORKS)
+                    wifi_network_scroll = wifi_selected - WIFI_VISIBLE_NETWORKS + 1;
+                draw_tool();
+            }
+            return 1;
+        }
+        if (ks == XK_Tab) { wifi_password_editing = !wifi_password_editing; draw_tool(); return 1; }
+        if (ks == XK_Return || ks == XK_KP_Enter) { wifi_connect_selected(); draw_tool(); return 1; }
+        if (wifi_password_editing && ks == XK_BackSpace) {
+            size_t n = strlen(wifi_password); if (n) wifi_password[n - 1] = 0;
+            draw_tool(); return 1;
+        }
+        if (wifi_password_editing) {
+            char buffer[32];
+            int n = XLookupString(e, buffer, sizeof(buffer), NULL, NULL);
+            for (int i = 0; i < n; i++) {
+                size_t used = strlen(wifi_password);
+                if ((unsigned char)buffer[i] >= 32 && buffer[i] != 127 && used + 1 < sizeof(wifi_password)) {
+                    wifi_password[used] = buffer[i]; wifi_password[used + 1] = 0;
+                }
+            }
+            draw_tool(); return 1;
+        }
+        return 1;
+    }
     if (tool_kind == TOOL_SYSMON) {
         if (ks == XK_Escape || ks == XK_q || ks == XK_Q) tool_close();
         return 1;
@@ -3636,6 +3973,7 @@ int main(int argc, char **argv)
         napps = desktop_scan(dirs, ndirs, apps, 1024);
     }
     build_pins();
+    wifi_refresh_local();
 
     create_ui_windows();
     draw_desktop();
@@ -3711,6 +4049,7 @@ int main(int argc, char **argv)
                 if (ev.xconfigure.window == root &&
                     (ev.xconfigure.width != screen_w || ev.xconfigure.height != screen_h)) {
                     screen_w = ev.xconfigure.width; screen_h = ev.xconfigure.height;
+                    XMoveResizeWindow(dpy, edge_win, desktop_right_rule(), 0, 4, screen_h - bar_h);
                     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
                     desktop_normalize_slots(); pins_sync_config();
                     draw_desktop(); draw_bar(); recalc_struts();
@@ -3805,16 +4144,25 @@ int main(int argc, char **argv)
                 break;
             }
         }
-        /* 1 Hz clock/tick + shutdown check, without busy-waiting */
+        /* 1 Hz clock/tick + asynchronous Wi-Fi output, without busy-waiting. */
         int fd = ConnectionNumber(dpy);
         fd_set rf; FD_ZERO(&rf); FD_SET(fd, &rf);
+        int maxfd = fd;
+        if (wifi_job.fd >= 0) {
+            FD_SET(wifi_job.fd, &rf);
+            if (wifi_job.fd > maxfd) maxfd = wifi_job.fd;
+        }
         struct timeval tv = { 0, 250000 };
-        if (select(fd + 1, &rf, NULL, NULL, &tv) == 0) {
-            time_t now = time(NULL);
-            if (now != last_clock) {
-                last_clock = now; draw_bar();
-                if (tool_kind == TOOL_SYSMON) { refresh_sysmon(); draw_tool(); }
-                else if (tool_kind == TOOL_SETTINGS && settings_field) draw_tool();
+        int selected = select(maxfd + 1, &rf, NULL, NULL, &tv);
+        if (selected > 0 && wifi_job.fd >= 0 && FD_ISSET(wifi_job.fd, &rf)) wifi_job_read();
+        time_t now = time(NULL);
+        if (now != last_clock) {
+            last_clock = now; draw_bar();
+            if (tool_kind == TOOL_SYSMON) { refresh_sysmon(); draw_tool(); }
+            else if (tool_kind == TOOL_SETTINGS && settings_field) draw_tool();
+            if (now % 5 == 0) {
+                wifi_refresh_local(); draw_bar();
+                if (tool_kind == TOOL_WIFI) draw_tool();
             }
         }
         if (!running) break;
@@ -3822,6 +4170,7 @@ int main(int argc, char **argv)
 
     /* restore every client to the root before dying, so a restart (or
      * the next WM) finds plain top-level windows */
+    wifi_job_stop();
     while (nclients) remove_client(clients[0], 1);
     XChangeProperty(dpy, root, atoms[A_NET_SUPPORTED], XA_ATOM, 32, PropModeReplace, NULL, 0);
     XCloseDisplay(dpy);

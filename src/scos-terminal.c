@@ -28,7 +28,7 @@
 #include <unistd.h>
 
 #ifndef VERSION
-#define VERSION "0.5.4"
+#define VERSION "0.5.5"
 #endif
 #define TAB_H 22
 #define TAB_W 74
@@ -46,7 +46,7 @@ static XIC xic;
 static Pixmap back;
 static int win_w = 700, win_h = 450;
 static int cell_w = 8, cell_h = 16, font_ascent = 12;
-static int running = 1, need_redraw = 1, focused = 1;
+static int running = 1, need_redraw = 1, need_tab_redraw = 1, focused = 1;
 static int hold_open;
 static struct scos_theme theme;
 static unsigned long main_pixel, bg_pixel, text_pixel, taskbar_pixel;
@@ -70,6 +70,17 @@ static char *clipboard;
 static size_t clipboard_len;
 static int selecting, selection_active;
 static int sel_anchor_row, sel_anchor_col, sel_row, sel_col;
+
+/* Last screen actually present in the backing pixmap. Keeping this small
+ * shadow avoids repainting thousands of unchanged cells for every echoed
+ * key or readline cursor movement. */
+static struct {
+    term_cell *cells;
+    unsigned char *dirty_rows;
+    int cols, rows, valid;
+    int cursor_x, cursor_y, cursor_visible, focused, scroll_offset;
+    int selection_active, anchor_row, anchor_col, sel_row, sel_col;
+} painted;
 
 static struct { uint32_t rgb; unsigned long pixel; } *color_cache;
 static int color_cache_n, color_cache_cap;
@@ -130,6 +141,29 @@ static void text_out(Drawable d, int x, int y, const char *s, unsigned long fg)
     XDrawString(dpy, d, gc, x, y, s, (int)strlen(s));
 }
 
+static void clipped_text(Drawable d, int x, int y, const char *s, int max_w,
+                         unsigned long fg)
+{
+    if (max_w <= 0) return;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", s ? s : "");
+    if (XTextWidth(font, buf, (int)strlen(buf)) > max_w) {
+        int fitted = 0;
+        for (int len = (int)strlen(buf) - 1; len >= 0; len--) {
+            buf[len] = 0;
+            char candidate[260];
+            int n = snprintf(candidate, sizeof(candidate), "%s...", buf);
+            if (n >= 0 && n < (int)sizeof(candidate) &&
+                XTextWidth(font, candidate, n) <= max_w) {
+                text_out(d, x, y, candidate, fg);
+                fitted = 1;
+                break;
+            }
+        }
+        if (!fitted) return;
+    } else text_out(d, x, y, buf, fg);
+}
+
 static void fill(Drawable d, int x, int y, int w, int h, unsigned long px)
 {
     XSetForeground(dpy, gc, px);
@@ -166,6 +200,7 @@ static void update_pty_size(struct tab *t)
 
 static void update_title(void)
 {
+    need_tab_redraw = 1;
     struct tab *t = current_tab();
     char title[256], latin[256];
     if (t && t->em.title[0] && strcmp(t->em.title, "Terminal"))
@@ -215,6 +250,7 @@ static void flush_replies(struct tab *t)
     if (t->em.title_changed) {
         t->em.title_changed = 0;
         if (t == current_tab()) update_title();
+        need_tab_redraw = 1;
         need_redraw = 1;
     }
 }
@@ -229,7 +265,7 @@ static void read_tab(struct tab *t)
         if (n > 0) {
             term_feed(&t->em, buf, (size_t)n);
             flush_replies(t);
-            if (t != current_tab()) t->activity = 1;
+            if (t != current_tab()) { t->activity = 1; need_tab_redraw = 1; }
             if (t == current_tab()) selection_active = 0;
             need_redraw = 1;
             continue;
@@ -522,12 +558,15 @@ static void draw_tab_strip(void)
         fill(back, x, 2, TAB_W - 3, TAB_H - 4,
              active ? bg_pixel : rgb_pixel(color_blend_rgb(theme.win_bg, theme.main, 12)));
         outline(back, x, 2, TAB_W - 3, TAB_H - 4, main_pixel);
-        char label[32], latin[32];
+        char label[64], latin[64];
         const char *name = tabs[i]->em.title[0] ? tabs[i]->em.title : "term";
         if (!strcmp(name, "Terminal")) name = "term";
-        snprintf(label, sizeof(label), "%d:%.12s%s", i + 1, name, tabs[i]->activity && !active ? "*" : "");
+        snprintf(label, sizeof(label), "%d:%.40s%s", i + 1, name, tabs[i]->activity && !active ? "*" : "");
         utf8_to_latin1(label, latin, sizeof(latin));
-        text_out(back, x + 5, 5 + font_ascent, latin, active ? main_pixel : text_pixel);
+        /* The close glyph owns the rightmost 16 px. Measure and ellipsize
+         * instead of letting a long hostname write through that control. */
+        clipped_text(back, x + 5, 5 + font_ascent, latin, TAB_W - 27,
+                     active ? main_pixel : text_pixel);
         text_out(back, x + TAB_W - 16, 5 + font_ascent, "x", text_pixel);
         x += TAB_W;
     }
@@ -538,15 +577,101 @@ static void draw_tab_strip(void)
     }
 }
 
+static int painted_cell_equal(const term_cell *a, const term_cell *b)
+{
+    return a->ch == b->ch && a->fg == b->fg && a->bg == b->bg && a->attrs == b->attrs;
+}
+
+static term_cell painted_cell_at(struct tab *t, const term_line *line, int col)
+{
+    term_cell c;
+    if (line && col < line->len) return line->cells[col];
+    c.ch = ' '; c.fg = t->em.default_fg; c.bg = t->em.default_bg; c.attrs = 0;
+    return c;
+}
+
 static void draw(void)
 {
     if (!back) return;
-    fill(back, 0, 0, win_w, win_h, bg_pixel);
-    draw_tab_strip();
     struct tab *t = current_tab();
-    if (t) for (int r = 0; r < content_rows(); r++) draw_terminal_line(t, r);
-    XCopyArea(dpy, back, win, gc, 0, 0, win_w, win_h, 0, 0);
-    need_redraw = 0;
+    if (!t) { need_redraw = 0; return; }
+    int cols = content_cols(), rows = content_rows();
+    int dimensions_changed = painted.cols != cols || painted.rows != rows;
+    if (dimensions_changed || !painted.cells || !painted.dirty_rows) {
+        free(painted.cells); free(painted.dirty_rows);
+        painted.cells = calloc((size_t)cols * (size_t)rows, sizeof(*painted.cells));
+        painted.dirty_rows = calloc((size_t)rows, 1);
+        painted.cols = cols; painted.rows = rows; painted.valid = 0;
+        dimensions_changed = 1;
+    }
+    if (!painted.cells || !painted.dirty_rows) {
+        /* Memory pressure must not leave a stale terminal on screen. */
+        fill(back, 0, 0, win_w, win_h, bg_pixel);
+        draw_tab_strip();
+        for (int r = 0; r < rows; r++) draw_terminal_line(t, r);
+        XCopyArea(dpy, back, win, gc, 0, 0, win_w, win_h, 0, 0);
+        need_redraw = need_tab_redraw = 0;
+        return;
+    }
+
+    int selection_changed = painted.selection_active != selection_active ||
+        painted.anchor_row != sel_anchor_row || painted.anchor_col != sel_anchor_col ||
+        painted.sel_row != sel_row || painted.sel_col != sel_col;
+    int full = !painted.valid || dimensions_changed || selection_changed ||
+        painted.focused != focused || painted.scroll_offset != t->em.scroll_offset;
+    if (full) fill(back, 0, 0, win_w, win_h, bg_pixel);
+    if (full || need_tab_redraw) {
+        draw_tab_strip();
+        if (!full) XCopyArea(dpy, back, win, gc, 0, 0, win_w, TAB_H, 0, 0);
+    }
+
+    int cursor_active = focused && t->em.scroll_offset == 0 && t->em.cursor_visible;
+    int old_cursor_active = painted.valid && painted.focused &&
+        painted.scroll_offset == 0 && painted.cursor_visible;
+    int cursor_changed = cursor_active != old_cursor_active ||
+        (cursor_active && old_cursor_active &&
+         (painted.cursor_x != t->em.screen->cx || painted.cursor_y != t->em.screen->cy));
+
+    for (int r = 0; r < rows; r++) {
+        const term_line *line = term_view_line(&t->em, r);
+        int dirty = full;
+        for (int c = 0; c < cols; c++) {
+            term_cell now = painted_cell_at(t, line, c);
+            term_cell *old = &painted.cells[r * cols + c];
+            if (!painted_cell_equal(old, &now)) dirty = 1;
+            *old = now;
+        }
+        if (cursor_changed && ((old_cursor_active && painted.cursor_y == r) ||
+                               (cursor_active && t->em.screen->cy == r))) dirty = 1;
+        painted.dirty_rows[r] = (unsigned char)dirty;
+    }
+
+    int span_start = -1;
+    for (int r = 0; r < rows; r++) {
+        int dirty = painted.dirty_rows[r] != 0;
+        if (dirty) {
+            draw_terminal_line(t, r);
+            if (span_start < 0) span_start = r;
+        }
+        if (span_start >= 0 && (!dirty || r == rows - 1)) {
+            int span_end = dirty ? r : r - 1;
+            int y = CONTENT_Y + span_start * cell_h;
+            if (!full)
+                XCopyArea(dpy, back, win, gc, CONTENT_X, y, cols * cell_w,
+                          (span_end - span_start + 1) * cell_h, CONTENT_X, y);
+            span_start = -1;
+        }
+    }
+    if (full) XCopyArea(dpy, back, win, gc, 0, 0, win_w, win_h, 0, 0);
+
+    painted.cursor_x = t->em.screen->cx; painted.cursor_y = t->em.screen->cy;
+    painted.cursor_visible = t->em.cursor_visible;
+    painted.focused = focused; painted.scroll_offset = t->em.scroll_offset;
+    painted.selection_active = selection_active;
+    painted.anchor_row = sel_anchor_row; painted.anchor_col = sel_anchor_col;
+    painted.sel_row = sel_row; painted.sel_col = sel_col;
+    painted.valid = 1;
+    need_redraw = need_tab_redraw = 0;
 }
 
 static void clear_selection(void)
@@ -580,6 +705,9 @@ static void resize_terminal(int w, int h)
         update_pty_size(tabs[i]);
     }
     clear_selection();
+    /* A new backing pixmap is empty even if the cell grid dimensions did
+     * not change (for example, a one-pixel WM resize). */
+    painted.valid = 0;
     need_redraw = 1;
 }
 
@@ -828,7 +956,9 @@ static void handle_selection_notify(XSelectionEvent *e)
 static void handle_event(XEvent *e)
 {
     switch (e->type) {
-    case Expose: if (e->xexpose.count == 0) need_redraw = 1; break;
+    case Expose:
+        if (e->xexpose.count == 0) { need_redraw = 1; painted.valid = 0; }
+        break;
     case ConfigureNotify: resize_terminal(e->xconfigure.width, e->xconfigure.height); break;
     case KeyPress: handle_key(&e->xkey); break;
     case ButtonPress: handle_button(&e->xbutton); break;
@@ -992,6 +1122,8 @@ int main(int argc, char **argv)
     }
     while (ntabs) close_tab(ntabs - 1);
     free(clipboard);
+    free(painted.cells);
+    free(painted.dirty_rows);
     free(color_cache);
     if (xic) XDestroyIC(xic);
     if (xim) XCloseIM(xim);

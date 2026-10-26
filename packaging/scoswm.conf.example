@@ -15,11 +15,12 @@ theme = matrix-1
 # title_text = #001500
 # taskbar_bg = #141414
 
-# Programs. Empty terminal prefers the bundled scos-terminal, which runs
-# a real interactive Bash. Set an explicit command to use another terminal.
-# Empty files auto-detects thunar, pcmanfm, nautilus, dolphin or nemo.
+# Programs. Empty values prefer the bundled scos-terminal (real Bash/PTY)
+# and scos-files (real POSIX directories). Set an explicit command to use
+# another terminal or file manager; scoswm does not require a system one.
 # Examples: terminal = alacritty
 #           terminal = xterm -fa fixed
+#           files = thunar
 terminal =
 files =
 

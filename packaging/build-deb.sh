@@ -31,7 +31,7 @@ chmod 755 "$stage"
 mkdir -p "$stage/DEBIAN"
 # Real shared-library dependencies from the built binary.
 if [ -f debian/control ] && command -v dpkg-shlibdeps >/dev/null 2>&1; then
-    shlibs=$(dpkg-shlibdeps -O "$stage/usr/bin/scoswm" "$stage/usr/bin/scos-terminal" | sed 's/^shlibs:Depends=//')
+    shlibs=$(dpkg-shlibdeps -O "$stage/usr/bin/scoswm" "$stage/usr/bin/scos-terminal" "$stage/usr/bin/scos-files" | sed 's/^shlibs:Depends=//')
 else
     shlibs="libc6, libx11-6, zlib1g"
 fi
@@ -46,7 +46,7 @@ Architecture: $arch
 Maintainer: Joe <167563398+Joercat@users.noreply.github.com>
 Depends: $shlibs, bash, xfonts-base
 Recommends: xserver-xorg-core, xinit, xdg-utils, dbus-x11, libxcursor1, libgdk-pixbuf-2.0-0, librsvg2-common
-Suggests: sddm, slock | i3lock | suckless-tools, thunar | pcmanfm | nautilus | dolphin | nemo
+Suggests: sddm, networkmanager, slock | i3lock | suckless-tools
 Installed-Size: $installed_size
 Homepage: https://github.com/Joercat/scoswm-arch
 Description: SCos-styled lightweight X11 window manager
@@ -55,7 +55,9 @@ Description: SCos-styled lightweight X11 window manager
  desktop. It installs /usr/share/xsessions/scoswm.desktop, so display
  managers such as SDDM offer "SCosWM" as a selectable X11 session.
  The included scos-terminal runs a real interactive Bash on a PTY and
- also installs a standalone desktop entry for KDE and other desktops.
+ scos-files browses real POSIX directories. Both install standalone
+ desktop entries for KDE and other desktops. The taskbar Wi-Fi panel
+ preserves multiple adapters and simultaneous connections.
 EOF
 
 out="$root/scoswm_${version}_${arch}.deb"

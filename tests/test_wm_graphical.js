@@ -53,6 +53,14 @@ function property(server, win, name) {
         configureLog.push({ wid, mask, source: client.resourceBase, width: win && win.width, height: win && win.height });
         return result;
     };
+    const copyAreas = [];
+    const originalCopyArea = server.handlers[62];
+    server.handlers[62] = (client, detail, body) => {
+        const result = originalCopyArea(client, detail, body);
+        copyAreas.push({ dst: body.readUInt32LE(4), width: body.readUInt16LE(20),
+            height: body.readUInt16LE(22), at: Date.now() });
+        return result;
+    };
 
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'scoswm-graphical-'));
     fs.mkdirSync(path.join(home, '.config/scoswm'), { recursive: true });
@@ -63,7 +71,25 @@ function property(server, win, name) {
     fs.copyFileSync(path.join(repo, 'packaging/scos-terminal.desktop'), path.join(home, '.local/share/applications/scos-terminal.desktop'));
     fs.cpSync(path.join(repo, 'packaging/icons/hicolor'), path.join(home, '.local/share/icons/hicolor'), { recursive: true });
     fs.cpSync(path.join(repo, 'packaging/icons/SCos'), path.join(home, '.local/share/icons/SCos'), { recursive: true });
-    const env = { ...process.env, DISPLAY: displayName, HOME: home, XCURSOR_THEME: 'SCos', XCURSOR_SIZE: '24' };
+    const fakeBin = path.join(home, 'bin');
+    const nmcliLog = path.join(home, 'nmcli-args');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, 'nmcli'), `#!/bin/sh
+if [ "$1" = "-t" ]; then
+    : > "$NMCLI_LOG.started"
+    sleep 2
+    printf '%s\\n' '*:HomeNet:82:WPA2:wlp1s0' '*:HomeNet:71:WPA2:wlp2s0' \\
+        ':Coffee:55:--:wlp1s0' ':Lab:60:WPA2:wlp2s0' ':Five:50:--:wlp1s0' \\
+        ':Six:49:--:wlp2s0' ':Seven:48:--:wlp1s0' ':Eight:47:--:wlp2s0'
+    : > "$NMCLI_LOG.finished"
+elif [ "$1" = "device" ]; then
+    printf '%s\\n' "$@" > "$NMCLI_LOG"
+    printf 'Connected\\n'
+fi
+`);
+    fs.chmodSync(path.join(fakeBin, 'nmcli'), 0o755);
+    const env = { ...process.env, DISPLAY: displayName, HOME: home, XCURSOR_THEME: 'SCos', XCURSOR_SIZE: '24',
+        PATH: `${fakeBin}:${process.env.PATH || '/usr/bin:/bin'}`, NMCLI_LOG: nmcliLog };
     delete env.XDG_CONFIG_HOME;
     delete env.XDG_DATA_HOME;
     delete env.XDG_DATA_DIRS;
@@ -73,7 +99,7 @@ function property(server, win, name) {
         type: server.atomsByName.get('STRING'), format: 8,
         data: Buffer.from('Xft.dpi: 96\nXcursor.theme: Breeze\nXcursor.size: 32\nXresources.keep: yes\n')
     });
-    let wm, terminal, conn;
+    let wm, terminal, longTerminal, filesApp, conn;
     let wmLog = '', terminalLog = '';
     const net = server.listen(displayNum);
     try {
@@ -84,6 +110,12 @@ function property(server, win, name) {
         await delay(500);
         assert.equal(wm.exitCode, null, `WM exited: ${wmLog}`);
         const bar = await waitFor(() => server.root.children.find(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped), '28px taskbar');
+        const edgeRule = await waitFor(() => server.root.children.find(w =>
+            property(server, w, 'WM_NAME') === 'SCosWM desktop right rule' && w.mapped), 'dedicated right-rule window');
+        assert.equal(edgeRule.x, 783);
+        assert.equal(edgeRule.y, 0);
+        assert.equal(edgeRule.width, 4);
+        assert.equal(edgeRule.height, 572);
         const main = 0x39ff14;
         const resources = property(server, server.root, 'RESOURCE_MANAGER') || '';
         assert.match(resources, /Xcursor\.theme:\s*SCos/, 'Qt/X resource cursor theme');
@@ -150,7 +182,7 @@ function property(server, win, name) {
                 for (let x = x0; x < x0 + w; x++) if (pixel(x, y) === color) count++;
             return count;
         };
-        const controlRanges = [[8, 42], [48, 158], [168, 323], [650, 684]];
+        const controlRanges = [[8, 42], [48, 158], [168, 323], [610, 644], [650, 684]];
         for (const [x0, x1] of controlRanges) {
             for (let y = 22; y < 28; y++) {
                 for (let x = x0; x < x1; x++)
@@ -251,9 +283,11 @@ function property(server, win, name) {
         // may appear in the empty area between the pins and power control.
         assert.equal(barPixel(168, 6), main, 'running app replaced a pinned shortcut');
         for (let y = 6; y < 22; y++) {
-            for (let x = 328; x < 640; x++)
+            for (let x = 328; x < 600; x++)
                 assert.notEqual(barPixel(x, y), main, `running-window taskbar box at ${x},${y}`);
         }
+        assert.equal(barPixel(610, 6), main, 'Wi-Fi button border before unchanged power control');
+        assert.equal(barPixel(650, 6), main, 'power control retained its original coordinate');
 
         // Minimise from the titlebar, then restore through the Windows picker.
         // The real client must retain 400x300 throughout both animations.
@@ -383,6 +417,76 @@ function property(server, win, name) {
         assert.equal(termWin.width, startW - 200);
         assert.equal(termWin.height, startH - 90);
 
+        // Real Bash/readline input must repaint changed rows, not the entire
+        // terminal for every echoed key or pressed arrow. This is a rendering
+        // scheduling assertion, not a claim about physical-display latency.
+        await delay(400);
+        const rasterSignature = w => {
+            let hash = 2166136261;
+            for (const pixel of w.raster.data) hash = Math.imul(hash ^ pixel, 16777619) >>> 0;
+            return hash;
+        };
+        const beforeInput = rasterSignature(termWin);
+        const copyMark = copyAreas.length;
+        const key = async code => {
+            server.injectKey(code, true); server.injectKey(code, false);
+            await delay(3);
+        };
+        for (const code of [26, 54, 43, 32, 65, 38, 56, 54]) await key(code); // echo abc
+        for (let i = 0; i < 12; i++) await key(113); // Left
+        for (let i = 0; i < 12; i++) await key(114); // Right
+        await key(36); // Return executes the command through Bash/readline
+        const inputCopies = copyAreas.slice(copyMark).filter(c => c.dst === termWin.id);
+        await waitFor(() => rasterSignature(termWin) !== beforeInput &&
+            copyAreas.slice(copyMark).some(c => c.dst === termWin.id && c.height <= 24),
+            'incremental terminal row paint after Bash and arrow input');
+        inputCopies.push(...copyAreas.slice(copyMark).filter(c => c.dst === termWin.id));
+        assert.ok(inputCopies.some(c => c.height <= 24), 'no changed-row terminal CopyArea observed');
+        assert.ok(inputCopies.every(c => c.height < termWin.height),
+            `typing/arrows caused a full terminal repaint: ${JSON.stringify(inputCopies)}`);
+        const subcellCopyMark = copyAreas.length;
+        const subcellWidth = termWin.width + 1, subcellHeight = termWin.height;
+        X.ResizeWindow(termWin.id, subcellWidth, subcellHeight);
+        await waitFor(() => termWin.width === subcellWidth, 'one-pixel terminal resize');
+        await waitFor(() => copyAreas.slice(subcellCopyMark).some(c => c.dst === termWin.id &&
+            c.width === subcellWidth && c.height === subcellHeight),
+            'unchanged cell grid repainted into its new sub-cell backing pixmap');
+
+        // A long OSC title must be ellipsized before the tab's Close glyph.
+        // Compare that control with the normal tab, then activate it for real.
+        const longName = 'system-host-name-that-is-far-too-long-for-a-terminal-tab';
+        longTerminal = spawn(path.join(repo, 'scos-terminal'),
+            ['-e', '/bin/sh', '-c', `printf '\\033]2;${longName}\\007'; cat`],
+            { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        longTerminal.stdout.on('data', b => terminalLog += b);
+        longTerminal.stderr.on('data', b => terminalLog += b);
+        const longWin = await waitFor(() => {
+            for (const res of server.resources.values())
+                if (res.type === 'window' && res.parent && res.parent.id !== root &&
+                    (property(server, res, '_NET_WM_NAME') || '').includes(longName)) return res;
+            return null;
+        }, 'long-title terminal managed');
+        await waitFor(() => {
+            let bright = 0;
+            for (let y = 3; y < 20; y++) {
+                for (let x = 58; x < 74; x++) {
+                    const pixel = longWin.raster.data[y * longWin.width + x];
+                    if (pixel !== termWin.raster.data[y * termWin.width + x]) return false;
+                    if ((pixel & 0xffffff) === main) bright++;
+                }
+            }
+            return bright > 0;
+        }, 'long tab title stayed outside its visible Close control');
+        // node-x11 documents AllowEvents as unmodelled, so it cannot ReplayPointer
+        // from the WM's ordinary left-click passive grab into the application.
+        longWin.buttonGrabs = [];
+        server.injectPointerMove(longWin.absX() + 66, longWin.absY() + 10);
+        assert.equal(server.pointerWindow().id, longWin.id, 'long-title Close click targeted another window');
+        assert.equal(server.grabs.pointer, null, 'stale pointer grab intercepted long-title Close');
+        server.injectButton(1, true); server.injectButton(1, false);
+        await waitFor(() => longTerminal.exitCode !== null || longTerminal.signalCode !== null,
+            'long-title tab Close click');
+
         // Open Settings from its permanent pin with a normal press/release.
         // The release must not close the panel, and live scaling must update
         // both the real bar and the persisted configuration.
@@ -472,9 +576,8 @@ function property(server, win, name) {
         await waitFor(() => { server.compose(); return rootPixel(500, 420) === main; },
             'visible desktop rubber-band border');
         server.injectButton(1, false);
-        await delay(100);
-        server.compose();
-        assert.notEqual(rootPixel(500, 420), main, 'rubber band remained after release');
+        await waitFor(() => { server.compose(); return rootPixel(500, 420) !== main; },
+            'rubber-band release repaint');
 
         // Drag Terminal from slot 0 to empty slot 13 (column 5, row 1).
         await beginDrag(56, 40);
@@ -598,8 +701,9 @@ function property(server, win, name) {
         wm = spawn(path.join(repo, 'scoswm'), [], { env, stdio: ['ignore', 'pipe', 'pipe'] });
         wm.stdout.on('data', b => wmLog += b);
         wm.stderr.on('data', b => wmLog += b);
-        await waitFor(() => server.root.children.some(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
+        const stressBar = await waitFor(() => server.root.children.find(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped),
             'restarted stress WM taskbar');
+        const stressBarPixel = (x, y) => stressBar.raster.data[y * stressBar.width + x] & 0xffffff;
         assert.equal(wm.exitCode, null, `stress WM exited during startup: ${wmLog}`);
 
         click(25, 586);
@@ -629,9 +733,73 @@ function property(server, win, name) {
         assert.equal(wm.exitCode, null, `WM exited after prolonged scrolling: ${wmLog}`);
         assert.equal(wm.signalCode, null, `WM signalled after prolonged scrolling: ${wmLog}`);
 
+        click(25, 586);
+        await waitFor(() => !stressLauncher.mapped, 'stress launcher close before standalone Files');
+
+        // Exercise the bundled application itself, independently of the
+        // external-manager override stressed above. All paths are real.
+        filesApp = spawn(path.join(repo, 'scos-files'), [home], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        filesApp.stdout.on('data', b => wmLog += b);
+        filesApp.stderr.on('data', b => wmLog += b);
+        const filesWin = await waitFor(() => {
+            for (const res of server.resources.values())
+                if (res.type === 'window' && res.mapped && res.parent && res.parent.id !== root &&
+                    (property(server, res, 'WM_NAME') || '').startsWith('SCos Files -')) return res;
+            return null;
+        }, 'bundled standalone Files managed');
+        filesWin.buttonGrabs = []; // same node-x11 ReplayPointer limitation as above
+        click(filesWin.absX() + 50, filesWin.absY() + 58);
+        await delay(50);
+        click(filesWin.absX() + 50, filesWin.absY() + 58);
+        await waitFor(() => property(server, filesWin, '_NET_WM_NAME') === 'SCos Files - bin',
+            'double-click real directory navigation');
+        click(filesWin.absX() + 125, filesWin.absY() + 21); // New Folder toolbar
+        const dialogX = (filesWin.width - 420) / 2, dialogY = (filesWin.height - 142) / 2;
+        click(filesWin.absX() + dialogX + 276, filesWin.absY() + dialogY + 120); // OK
+        const createdFolder = path.join(home, 'bin/new folder');
+        await waitFor(() => fs.existsSync(createdFolder), 'Files New Folder dialog created a real directory');
+        click(filesWin.absX() + 50, filesWin.absY() + 58, 3);
+        click(filesWin.absX() + 70, filesWin.absY() + 97); // Rename context row
+        for (const code of [27, 26, 57, 38, 58, 26, 40]) await key(code); // renamed
+        await key(36);
+        await waitFor(() => fs.existsSync(path.join(home, 'bin/renamed')) && !fs.existsSync(createdFolder),
+            'Files context rename changed the real directory');
+        const filesFrame = filesWin.parent;
+        click(filesFrame.absX() + filesFrame.width - 13, filesFrame.absY() + 10);
+        await waitFor(() => filesApp.exitCode !== null || filesApp.signalCode !== null,
+            'standalone Files WM_DELETE close');
+
+        // The delayed fake nmcli proves the WM remains event-driven during a
+        // scan, then verifies per-device rows, scrolling and ifname connect.
+        click(627, 586);
+        const wifiPanel = await waitFor(() => server.root.children.find(w => w.width === 540 && w.height === 390 && w.mapped),
+            'Wi-Fi panel');
+        await waitFor(() => fs.existsSync(`${nmcliLog}.started`), 'asynchronous nmcli scan started');
+        assert.equal(fs.existsSync(`${nmcliLog}.finished`), false);
+        server.injectPointerMove(667, 586);
+        await waitFor(() => stressBarPixel(682, 7) === main, 'taskbar hover during delayed Wi-Fi scan', 800);
+        assert.equal(fs.existsSync(`${nmcliLog}.finished`), false, 'WM blocked until nmcli finished');
+        await waitFor(() => fs.existsSync(`${nmcliLog}.finished`), 'fake Wi-Fi scan results');
+        await delay(150);
+        const wifiPixel = (x, y) => wifiPanel.raster.data[y * wifiPanel.width + x] & 0xffffff;
+        const unscrolledWifi = rasterSignature(wifiPanel);
+        click(wifiPanel.absX() + 150, wifiPanel.absY() + 200, 5);
+        await waitFor(() => rasterSignature(wifiPanel) !== unscrolledWifi, 'Wi-Fi network wheel scrolling');
+        click(wifiPanel.absX() + 150, wifiPanel.absY() + 200, 4);
+        await waitFor(() => rasterSignature(wifiPanel) === unscrolledWifi, 'Wi-Fi network scroll restoration');
+        click(wifiPanel.absX() + 30, wifiPanel.absY() + 192); // second row: HomeNet on wlp2s0
+        await waitFor(() => wifiPixel(10, 182) === main, 'second-interface Wi-Fi row selected');
+        click(wifiPanel.absX() + 382, wifiPanel.absY() + 333); // Connect
+        await waitFor(() => fs.existsSync(nmcliLog), 'Wi-Fi connect arguments');
+        assert.deepEqual(fs.readFileSync(nmcliLog, 'utf8').trim().split('\n'),
+            ['device', 'wifi', 'connect', 'HomeNet', 'ifname', 'wlp2s0']);
+        click(wifiPanel.absX() + 520, wifiPanel.absY() + 12);
+        await waitFor(() => !wifiPanel.mapped, 'Wi-Fi panel close');
+        assert.equal(wm.exitCode, null, `WM exited during standalone Files/Wi-Fi checks: ${wmLog}`);
+
         assert.deepEqual(directDraws, [], `visible-window drawing bypassed backing pixmaps: ${JSON.stringify(directDraws)}`);
         assert.deepEqual(handlerErrors, [], `X server handler errors: ${handlerErrors.map(x => String(x.err)).join(', ')}`);
-        console.log('graphical WM: both right-border columns, centered labels, 28px taskbar bounds and upward power gap OK');
+        console.log('graphical WM: dedicated right-rule surface/fallback columns, centered labels, 28px taskbar bounds and upward power gap OK');
         console.log('graphical WM: high-contrast launcher/menu/taskbar/Settings states, close hover and dock stacking OK');
         console.log('graphical icons: dedicated Terminal/Files/SysMon/Settings desktop, pin and picker images OK');
         console.log('graphical cursor: preserved Qt resources, GTK XSETTINGS and themed inheritance OK');
@@ -643,6 +811,9 @@ function property(server, win, name) {
         console.log('graphical desktop: visible click-hold rubber-band selection and release OK');
         console.log('graphical Files: 12 external launches, live multi-size client icons and safe withdrawals OK');
         console.log('graphical launcher: 250 apps, separate PNG cache entries and 600 wheel events OK');
+        console.log('graphical terminal: real Bash/arrows use incremental rows; long-title Close remains visible/clickable OK');
+        console.log('graphical standalone Files: real navigation, New Folder, rename and KDE-class application lifetime OK');
+        console.log('graphical Wi-Fi: nonblocking scan, scrolling and second-ifname connect arguments OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);
@@ -650,6 +821,8 @@ function property(server, win, name) {
         throw err;
     } finally {
         if (terminal && terminal.exitCode === null && terminal.signalCode === null) terminal.kill('SIGTERM');
+        if (longTerminal && longTerminal.exitCode === null && longTerminal.signalCode === null) longTerminal.kill('SIGTERM');
+        if (filesApp && filesApp.exitCode === null && filesApp.signalCode === null) filesApp.kill('SIGTERM');
         if (wm && wm.exitCode === null && wm.signalCode === null) wm.kill('SIGTERM');
         if (conn) conn.terminate();
         await delay(100);

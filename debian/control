@@ -23,16 +23,19 @@ Recommends: xserver-xorg-core,
  libgdk-pixbuf-2.0-0,
  librsvg2-common
 Suggests: sddm,
- slock | i3lock | suckless-tools,
- thunar | pcmanfm | nautilus | dolphin | nemo
+ networkmanager,
+ slock | i3lock | suckless-tools
 Description: SCos-styled lightweight X11 window manager
  scoswm is a small, non-compositing X11 window manager that manages
  ordinary Linux applications while looking and behaving like the SCos
  desktop: bottom taskbar with launcher, window picker, pins, power
  button and clock; real freedesktop icons on the desktop and taskbar;
  and the Terminal/Files/SysMon/Settings core apps.  The included
- scos-terminal runs a real interactive Bash on a PTY and installs its
- own application entry, so it also works in KDE and other desktops.
+ scos-terminal runs a real interactive Bash on a PTY and scos-files
+ browses real POSIX directories; both install their own application
+ entries, so they also work in KDE and other desktops.  The taskbar
+ Wi-Fi panel preserves multiple adapters and simultaneous connections,
+ using NetworkManager only for optional scan/connect operations.
  .
  It installs /usr/share/xsessions/scoswm.desktop, so display managers
  such as SDDM offer "SCosWM" as a selectable X11 session at login.

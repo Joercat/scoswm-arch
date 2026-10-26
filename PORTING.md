@@ -19,12 +19,13 @@ it could only run SCos's built-in apps.
 |---|---|
 | `theme.c` four palettes | Copied verbatim into `src/util.c` (`scos_themes[]`), unit-tested; config can also define a custom palette field-by-field |
 | `wm.c` 26 px titlebar, 18 px min/max/close, accent when focused, `color_blend` when not | Same geometry and colours in `src/scoswm.c: draw_frame()`; buttons act on the real client window (ICCCM `WM_DELETE_WINDOW`, EWMH state for maximise/minimise) |
-| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()`; only permanent pins occupy the main bar, while the picker lists real running windows with their icons and is the animation target for minimise/restore |
+| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()` plus a lightweight Wi-Fi button; only permanent pins occupy the main bar, while the picker lists real running windows with their icons and is the animation target for minimise/restore |
 | Launcher grid + `user/apps` | Launcher panel over the taskbar indexing freedesktop `.desktop` files, type-to-search — the Linux-native equivalent |
 | Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
 | Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff |
 | Settings app | Built-in lightweight panel: live theme/taskbar changes, Terminal/Files/Pins editing, saved to `~/.config/scoswm/scoswm.conf` |
-| SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal is the standalone `scos-terminal` Xlib/PTY application running real Bash; Files delegates to a real Linux file manager; SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
+| SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal is the standalone `scos-terminal` Xlib/PTY application running real Bash; Files is the standalone original-style `scos-files` X11/POSIX application (with an explicit external-command override); SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
+| No original network stack | Native per-adapter wireless status plus optional asynchronous `nmcli` scan/connect. Rows retain interface names and simultaneous active connections; no network daemon is embedded. |
 
 ## Protocol coverage
 
@@ -69,8 +70,12 @@ ISO10646 font when available for its Unicode cell grid.
   close hover, taskbar stacking, the pinned-only bar, picker activation and
   resize-free minimise/restore, 20 window-reuse cycles, all four built-in
   image sets, Qt/GTK cursor publication and inheritance, pointer-driven
-  terminal resize/move, and mouse-opened Settings with live persisted
-  taskbar scaling.
+  terminal resize/move, changed-row Bash/arrow repainting and long-tab Close
+  clipping, real standalone Files navigation/create/rename, delayed fake-
+  `nmcli` multi-device interaction, and mouse-opened Settings with live
+  persisted taskbar scaling. The right rule also has a dedicated WM-owned
+  override-redirect surface; headless geometry is not presented as proof of
+  physical-display visibility.
 - Earlier development runs also verified adoption, maximise/restore,
   Alt+Tab, desktop-icon and launcher launching, and config-file theming;
   `docs/scoswm.png` was captured from such a run.

@@ -23,8 +23,11 @@ The app set is intentionally small. The retained SCos core is
 **Terminal, Files, SysMon and Settings** — no games, demos or duplicate
 utilities. Terminal is the included `scos-terminal` application: an
 SCos-styled, tabbed terminal running a real interactive Bash on a Linux
-PTY. Files opens your configured/detected Linux file manager; SysMon and
-Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
+PTY. Files is the included original-style `scos-files` application, which
+browses and manages real POSIX directories without requiring a separately
+installed system file manager. Both programs also run standalone in KDE.
+The taskbar's Wi-Fi panel preserves multiple adapters and simultaneous
+connections. SysMon and Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
 (including NVIDIA proprietary vs nouveau detection) and only samples
 while open. Settings changes the theme,
 taskbar height, program choices, independent taskbar/desktop shortcuts,
@@ -80,7 +83,7 @@ Any distro:
 
 ```sh
 make
-sudo make install          # WM + terminal + icons/cursor theme + session entries
+sudo make install          # WM + Terminal + Files + artwork + session/app entries
 ```
 
 ### Selecting SCosWM in SDDM
@@ -138,6 +141,7 @@ startx
 | Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
+| Wi-Fi | Click the taskbar antenna to see per-card status, scan, choose a per-device network row, enter a password and connect; `F5` rescans and the wheel scrolls network rows |
 | Close focused window | `Alt+F4` or `Super+Q` |
 | Minimise / maximise focused | `Alt+F9` / `Alt+F10` |
 | Desktop menu | Right-click the desktop |
@@ -225,6 +229,34 @@ An explicit `terminal = ...` in `scoswm.conf` still takes priority for
 SCosWM's Terminal action. Set `SCOS_SHELL` only if you intentionally
 want a shell other than the default Bash.
 
+## SCos Files
+
+The Files action defaults to the bundled **SCos Files** application. It
+uses POSIX directories directly: double-click folders to navigate, use
+the editable path/Up/Home controls, create folders, and rename entries
+without silently overwriting an existing destination. Files open through
+the normal Linux desktop handler (`xdg-open`). The compact original-SCos
+layout is retained, but there is no kernel VFS or simulated filesystem.
+
+`/usr/share/applications/scos-files.desktop`, its `inode/directory` MIME
+association, `StartupWMClass=SCosFiles`, and the dedicated 16–256 px icons
+make it directly available from KDE and other desktops. Run it independently
+with `scos-files [DIRECTORY]`. An explicit `files = ...` configuration still
+permits another file-manager command; no external manager is required by
+default.
+
+## Taskbar Wi-Fi
+
+The antenna button opens a lightweight panel rather than another network
+daemon. Native sysfs, `/proc/net/wireless`, ioctl and address reading show
+all detected wireless adapters and their current SSIDs independently.
+When NetworkManager's `nmcli` is installed, Scan and Connect run in a
+nonblocking child process. Each result retains its interface name, so two
+cards connected to the same SSID remain two rows and simultaneous active
+connections are not collapsed into one global network. Select a row to
+choose its card; Enter/Connect uses that row's `ifname` and the password
+field for secured networks.
+
 ## Browser titlebars and window controls
 
 SCosWM draws the SCos titlebar and controls for managed X11 windows.
@@ -246,6 +278,7 @@ own pixels, and SCosWM does not modify browser profiles behind your back.
 ```ini
 theme = blue-sky
 terminal =                 # empty = SCos Terminal; or name another command
+files =                    # empty = SCos Files; or name another command
 pins = terminal, files, sysmon, settings, firefox, code
 desktop_pins = terminal, files, sysmon, settings
 desktop_slots = 0,1,2,3    # maintained automatically by desktop dragging
@@ -266,9 +299,10 @@ windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 There are deliberately **no multiple workspaces**: one workspace, no
 pager, no workspace daemon and no extra background process.
 
-With `terminal =` empty, SCosWM prefers its installed `scos-terminal`.
-External terminals remain supported as an explicit custom command and as
-a fallback if the bundled executable is unavailable.
+With `terminal =` and `files =` empty, SCosWM prefers its installed
+`scos-terminal` and `scos-files`. External programs remain supported as
+explicit custom commands; Terminal also retains its prior executable
+fallbacks, while Files always defaults to the bundled `scos-files`.
 
 `scoswm --theme blue-sky` overrides the theme for one run;
 `scoswm --config FILE` loads a specific config. `SCOSWM_DEBUG=1`
@@ -282,21 +316,25 @@ make check
 
 runs unit tests for the pure logic (SCos theme values, config and
 `.desktop` parsing, Exec field-code stripping, UTF-8 titles), terminal
-emulation checks, and a real interactive-Bash PTY integration test — all
-without needing an X server. When Xvfb is available, it also boots the
+emulation checks, a real interactive-Bash PTY integration test, real
+temporary-directory Files operations, and multi-adapter/escaped-nmcli
+Wi-Fi parsers — all without needing an X server. When Xvfb is available, it also boots the
 WM, manages a real Xlib client
 (`tests/testclient.c`) and verifies adoption through the window tree
 (`tests/xprobe.c`). Without any X server the integration step reports
 SKIP. `tests/run_graphical.sh` additionally runs headless graphical
 regressions when a `node-x11` checkout with `lib/xserver` is available:
-set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry and
-both right-border columns, 28 px taskbar bounds, the upward power-symbol
-opening, high-contrast launcher/menu/Settings selections, close hover, dock
+set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry, the
+dedicated right-rule surface and fallback columns, 28 px taskbar bounds,
+the upward power-symbol opening, high-contrast launcher/menu/Settings selections, close hover, dock
 stacking, the pinned-only taskbar, picker-based resize-free
 minimise/restore, 20 rapid window-withdrawal/reuse cycles, real images for
 all four built-ins, Qt/GTK cursor settings and cursor inheritance, buffered
-terminal resize/move behavior, and mouse-opened Settings with live persisted
-28/32 px taskbar scaling. It also exercises persistent desktop snapping,
+terminal resize/move behavior, changed-row Bash/arrow repainting and
+long-title Close clipping, plus mouse-opened Settings with live persisted
+28/32 px taskbar scaling. Standalone Files is driven through real directory
+navigation, creation and rename. A delayed fake `nmcli` checks nonblocking
+Wi-Fi scans, scrolling and per-interface connect arguments. It also exercises persistent desktop snapping,
 bidirectional shortcut drag/drop and previews, independent context-menu
 add/remove actions, visible rubber-band selection, 24/32/48 px icons and
 grid toggling. Crash-path regressions include 12 external Files launches
@@ -311,6 +349,8 @@ this WM and where real-application behaviour necessarily differs.
 - `src/scoswm.c` — the window manager (Xlib, EWMH/ICCCM)
 - `src/scos-terminal.c` — standalone Xlib terminal frontend and PTY sessions
 - `src/term_emulation.c` — display-independent terminal screen and VT parser
+- `src/scos-files.c`, `src/files_core.c` — standalone original-style X11 Files UI and POSIX directory operations
+- `src/wifi.c` — native multi-adapter status and escaped per-device NetworkManager parsing
 - `src/util.c` — X-independent helpers: themes, config, `.desktop` discovery, Linux `/proc` parsers
 - `packaging/` — display-manager session, example config, built-in artwork, SCos cursor theme and deterministic artwork generator
 - `tests/` — unit tests, integration harness client/probe
