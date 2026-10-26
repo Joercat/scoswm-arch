@@ -70,7 +70,12 @@ function property(server, win, name) {
         const original = server.handlers[opcode];
         server.handlers[opcode] = (client, detail, body) => {
             const drawable = server.resources.get(body.readUInt32LE(0));
-            if (drawable && drawable.type === 'window' && drawable.id !== 1 && drawable.owner === client)
+            // Real managed applications own their client-area rendering. The
+            // backing-pixmap contract below applies to SCosWM's own chrome.
+            const externalClient = drawable && drawable.type === 'window' &&
+                property(server, drawable, 'WM_CLASS') === 'thunar';
+            if (drawable && drawable.type === 'window' && drawable.id !== 1 &&
+                drawable.owner === client && !externalClient)
                 directDraws.push({ opcode, wid: drawable.id });
             return original(client, detail, body);
         };
@@ -81,7 +86,7 @@ function property(server, win, name) {
         const mask = body.readUInt16LE(4);
         const result = originalConfigure(client, detail, body);
         const win = server.resources.get(wid);
-        configureLog.push({ wid, mask, source: client.resourceBase, width: win && win.width, height: win && win.height });
+        configureLog.push({ wid, mask, source: client.resourceBase, width: win && win.width, height: win && win.height, y: win && win.y });
         return result;
     };
     const copyAreas = [];
@@ -120,9 +125,33 @@ elif [ "$1" = "device" ]; then
 fi
 `);
     fs.chmodSync(path.join(fakeBin, 'nmcli'), 0o755);
-    fs.writeFileSync(path.join(fakeBin, 'media-action'),
-        '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "${NMCLI_LOG}.media"\n');
+    fs.writeFileSync(path.join(fakeBin, 'media-action'), `#!/bin/sh
+state="\${NMCLI_LOG}.volume-state"
+level=40
+muted=0
+if [ -f "$state" ]; then read level muted < "$state"; fi
+case "$1" in
+    mute) if [ "$muted" = 1 ]; then muted=0; else muted=1; fi ;;
+    down) if [ "$level" -ge 5 ]; then level=$((level - 5)); fi ;;
+    up) level=$((level + 5)) ;;
+esac
+printf '%s %s\\n' "$level" "$muted" > "$state"
+printf '%s\\n' "$*" >> "\${NMCLI_LOG}.media"
+`);
     fs.chmodSync(path.join(fakeBin, 'media-action'), 0o755);
+    fs.writeFileSync(path.join(fakeBin, 'wpctl'), `#!/bin/sh
+if [ "$1" = "get-volume" ]; then
+    state="\${NMCLI_LOG}.volume-state"
+    level=40
+    muted=0
+    if [ -f "$state" ]; then read level muted < "$state"; fi
+    printf 'Volume: %d.%02d' $((level / 100)) $((level % 100))
+    if [ "$muted" = 1 ]; then printf ' [MUTED]'; fi
+    printf '\\n'
+    printf 'queried\\n' >> "\${NMCLI_LOG}.volume-query"
+fi
+`);
+    fs.chmodSync(path.join(fakeBin, 'wpctl'), 0o755);
     const env = { ...process.env, DISPLAY: displayName, HOME: home, XCURSOR_THEME: 'SCos', XCURSOR_SIZE: '24',
         PATH: `${fakeBin}:${process.env.PATH || '/usr/bin:/bin'}`, NMCLI_LOG: nmcliLog };
     delete env.XDG_CONFIG_HOME;
@@ -134,7 +163,7 @@ fi
         type: server.atomsByName.get('STRING'), format: 8,
         data: Buffer.from('Xft.dpi: 96\nXcursor.theme: Breeze\nXcursor.size: 32\nXresources.keep: yes\n')
     });
-    let wm, terminal, longTerminal, filesApp, conn;
+    let wm, terminal, longTerminal, pasteTerminal, filesApp, conn;
     let wmLog = '', terminalLog = '';
     const net = server.listen(displayNum);
     try {
@@ -147,9 +176,9 @@ fi
         const bar = await waitFor(() => server.root.children.find(w => w.width === 800 && w.height === 28 && w.y === 572 && w.mapped), '28px taskbar');
         const edgeRule = await waitFor(() => server.root.children.find(w =>
             property(server, w, 'WM_NAME') === 'SCosWM desktop right rule' && w.mapped), 'dedicated right-rule window');
-        assert.equal(edgeRule.x, 783);
+        assert.equal(edgeRule.x, 799);
         assert.equal(edgeRule.y, 0);
-        assert.equal(edgeRule.width, 2);
+        assert.equal(edgeRule.width, 1);
         assert.equal(edgeRule.height, 572);
         assert.equal(edgeRule.inputShapeEmpty, true, 'right rule must not intercept application input');
         const main = 0x39ff14;
@@ -195,9 +224,8 @@ fi
         });
         server.compose();
         const rootPixel = (x, y) => server.root.raster.data[y * 800 + x] & 0xffffff;
-        assert.equal(rootPixel(783, 100), main, 'thin inset right desktop border');
-        assert.equal(rootPixel(784, 100), main, 'second thin right desktop border column');
-        assert.notEqual(rootPixel(785, 100), main, 'right border became a thick bar again');
+        assert.equal(rootPixel(799, 100), main, '1px physical-edge right desktop border');
+        assert.notEqual(rootPixel(798, 100), main, 'right border became a separate inset line');
         assert.equal(rootPixel(700, 571), main, 'bottom desktop border');
 
         // "Files" is five 8px glyphs in an 80px cell at x=104: centered x=124.
@@ -496,6 +524,12 @@ fi
         assert.ok(inputCopies.some(c => c.height <= 24), 'no changed-row terminal CopyArea observed');
         assert.ok(inputCopies.every(c => c.height < termWin.height),
             `typing/arrows caused a full terminal repaint: ${JSON.stringify(inputCopies)}`);
+        const latencyMark = copyAreas.length, latencyStart = Date.now();
+        await key(26); // one ordinary echoed character must not wait for the 250ms idle timeout
+        await waitFor(() => copyAreas.slice(latencyMark).some(c => c.dst === termWin.id && c.height <= 24),
+            'terminal echo repaint arrival');
+        const echoLatency = Date.now() - latencyStart;
+        assert.ok(echoLatency < 180, `terminal echo waited for the idle timeout (${echoLatency}ms)`);
         const subcellCopyMark = copyAreas.length;
         const subcellWidth = termWin.width + 1, subcellHeight = termWin.height;
         X.ResizeWindow(termWin.id, subcellWidth, subcellHeight);
@@ -503,6 +537,54 @@ fi
         await waitFor(() => copyAreas.slice(subcellCopyMark).some(c => c.dst === termWin.id &&
             c.width === subcellWidth && c.height === subcellHeight),
             'unchanged cell grid repainted into its new sub-cell backing pixmap');
+
+        // A full PTY input queue must not block X rendering in write_input().
+        // The child stops reading for two seconds; a large paste is followed
+        // by a resize, which must still repaint promptly and lose no bytes.
+        pasteTerminal = spawn(path.join(repo, 'scos-terminal'),
+            ['-e', '/bin/sh', '-c', 'stty -icanon -echo; sleep 2; cat > "$NMCLI_LOG.pasted"'],
+            { env, stdio: ['ignore', 'pipe', 'pipe'] });
+        pasteTerminal.stdout.on('data', b => terminalLog += b);
+        pasteTerminal.stderr.on('data', b => terminalLog += b);
+        const pasteWin = await waitFor(() => {
+            for (const res of server.resources.values())
+                if (res.type === 'window' && res.parent && res.parent.id !== root && res.id !== termWin.id &&
+                    property(server, res, 'WM_CLASS') === 'scos-terminal') return res;
+            return null;
+        }, 'delayed-reader terminal managed');
+        await delay(200);
+        const clipboardAtom = await new Promise((resolve, reject) =>
+            X.InternAtom(false, 'CLIPBOARD', (err, atom) => err ? reject(err) : resolve(atom)));
+        const payload = Buffer.alloc(128 * 1024, 'x');
+        const pasteCopyMark = copyAreas.length;
+        const pasteResizeWidth = pasteWin.width + 1;
+        const pasteStart = Date.now();
+        const selectionHandler = ev => {
+            if (ev.name !== 'SelectionRequest' || ev.selection !== clipboardAtom) return;
+            X.ChangeProperty(0, ev.requestor, ev.property, ev.target, 8, payload);
+            X.SendEvent(ev.requestor, false, 0, {
+                name: 'SelectionNotify', time: ev.time, requestor: ev.requestor,
+                selection: ev.selection, target: ev.target, property: ev.property
+            });
+            // SelectionNotify reaches the terminal before this ConfigureNotify.
+            X.ResizeWindow(pasteWin.id, pasteResizeWidth, pasteWin.height);
+        };
+        X.on('event', selectionHandler);
+        X.SetSelectionOwner(wid, clipboardAtom);
+        server.injectKey(37, true); server.injectKey(50, true);
+        await key(55); // Ctrl+Shift+V
+        server.injectKey(50, false); server.injectKey(37, false);
+        await waitFor(() => copyAreas.slice(pasteCopyMark).some(c => c.dst === pasteWin.id &&
+            c.width === pasteResizeWidth), 'terminal repaint during delayed-reader paste', 1000);
+        const pasteLatency = Date.now() - pasteStart;
+        assert.ok(pasteLatency < 500, `PTY input queue blocked terminal rendering (${pasteLatency}ms)`);
+        X.removeListener('event', selectionHandler);
+        await waitFor(() => fs.existsSync(`${nmcliLog}.pasted`) &&
+            fs.statSync(`${nmcliLog}.pasted`).size === payload.length,
+            'queued paste bytes arrive after child resumes reading', 5000);
+        pasteTerminal.kill('SIGTERM');
+        await waitFor(() => pasteTerminal.exitCode !== null || pasteTerminal.signalCode !== null,
+            'delayed-reader terminal cleanup');
 
         // A long OSC title must be ellipsized before the tab's Close glyph.
         // Compare that control with the normal tab, then activate it for real.
@@ -619,8 +701,7 @@ fi
             'covering application resize');
         await waitFor(() => {
             server.compose();
-            return rootPixel(783, 100) === main && rootPixel(784, 100) === main &&
-                rootPixel(785, 100) !== main;
+            return rootPixel(799, 100) === main && rootPixel(798, 100) !== main;
         }, 'right rule visible above covering application');
         assert.ok(server.root.children.indexOf(edgeRule) > server.root.children.indexOf(frame),
             'right rule stacked below covering application');
@@ -866,7 +947,7 @@ fi
         await waitFor(() => fs.existsSync(path.join(home, 'bin/renamed')) && !fs.existsSync(createdFolder),
             'Files context rename changed the real directory');
         const filesFrame = filesWin.parent;
-        const filesCloseX = filesFrame.absX() + filesFrame.width - 17; // x=783: thin-rule column
+        const filesCloseX = filesFrame.absX() + filesFrame.width - 17; // Close remains unobscured inside the physical-edge rule
         const filesCloseY = filesFrame.absY() + 10;
         server.injectPointerMove(filesCloseX, filesCloseY);
         assert.equal(server.pointerWindow(), filesFrame, 'right rule intercepted Files Close input');
@@ -941,6 +1022,21 @@ fi
         const mediaActions = fs.readFileSync(mediaLog, 'utf8').trim().split('\n');
         assert.equal(mediaActions.length, 3, 'media key was lost or executed more than once');
         assert.deepEqual(mediaActions.sort(), ['down', 'mute', 'up']);
+        await waitFor(() => fs.existsSync(`${nmcliLog}.volume-query`),
+            'asynchronous actual-volume query after media action');
+        const volumeOsd = await waitFor(() => server.root.children.find(w =>
+            property(server, w, 'WM_NAME') === 'SCosWM volume status' && w.mapped),
+            'visible volume percentage/mute OSD');
+        assert.equal(volumeOsd.width, 260);
+        assert.equal(volumeOsd.height, 72);
+        assert.equal(volumeOsd.inputShapeEmpty, true, 'volume OSD must not intercept clicks');
+        const volumePixel = (x, y) => volumeOsd.raster.data[y * volumeOsd.width + x] & 0xffffff;
+        await waitFor(() => volumePixel(0, 0) === main, 'volume OSD backing-image paint');
+        assert.ok(countColorPixels(volumePixel, 180, 8, 64, 18, main) > 0,
+            'numeric volume percentage missing from OSD');
+        server.injectPointerMove(400, 520);
+        assert.notEqual(server.pointerWindow(), volumeOsd, 'volume OSD intercepted pointer input');
+        await waitFor(() => !volumeOsd.mapped, 'volume OSD is transient', 3500);
         assert.equal(wm.exitCode, null, `WM exited during standalone Files/Wi-Fi checks: ${wmLog}`);
 
         // A non-core .desktop pin gives both surfaces the same real process
@@ -1002,7 +1098,11 @@ fi
                 property(server, w, 'WM_NAME') === 'SCosWM window overview' && w.mapped),
                 'right-click visual window overview');
         };
+        const overviewAnimationMark = configureLog.length;
         let overview = await openOverview();
+        assert.ok(configureLog.slice(overviewAnimationMark).some(e =>
+            e.wid === overview.id && e.y > 0), 'overview opening transition did not start offset');
+        await waitFor(() => overview.y === 0, 'overview opening transition settles at rest');
         assert.equal(overview.width, 800);
         assert.equal(overview.height, 572, 'overview must leave the taskbar uncovered');
         assert.equal(multiBar.mapped, true, 'taskbar hidden while overview is open');
@@ -1020,6 +1120,18 @@ fi
             'overview wallpaper grid is missing from the clean margin');
         assert.notEqual(overviewPixel(10, 64), main,
             'desktop icon or tile painted in overview margin');
+        await waitFor(() => overviewPixel(62, 209) === 0xc03030,
+            'overview does not contain the real client red content block');
+        assert.equal(overviewPixel(407, 405), 0x3465a4,
+            'overview does not contain the real client blue background');
+        assert.ok(countColorPixels(overviewPixel, 34, 82, 427, 22, main) > 300,
+            'overview title strip is not unconditionally high contrast');
+        assert.ok(countColorPixels(overviewPixel, 60, 82, 390, 22, 0x001500) > 10,
+            'overview title is only readable on hover');
+        let iconPixels = 0;
+        for (let y = 84; y < 100; y++) for (let x = 38; x < 54; x++)
+            if (overviewPixel(x, y) !== main) iconPixels++;
+        assert.ok(iconPixels > 8, 'application icon missing from overview title strip');
         click(550, 150); // second MRU tile: middle instance
         await waitFor(() => !overview.mapped && activeWindow() === middle.id && multiRule.mapped,
             'overview tile activates its real window and restores the rule');
@@ -1090,12 +1202,12 @@ fi
         console.log('graphical desktop: visible click-hold rubber-band selection and release OK');
         console.log('graphical Files: 12 external launches, live multi-size client icons and safe withdrawals OK');
         console.log('graphical launcher: 250 apps, separate PNG cache entries and 600 wheel events OK');
-        console.log('graphical terminal: real Bash/arrows use incremental rows; long-title Close remains visible/clickable OK');
+        console.log('graphical terminal: incremental rows, echo <180ms, nonblocking 128KiB queued paste; long-title Close OK');
         console.log('graphical standalone Files: real navigation, New Folder, rename and KDE-class application lifetime OK');
         console.log('graphical Wi-Fi: nonblocking scan, active-first rows, hover, scrolling and per-ifname connect arguments OK');
-        console.log('graphical media keys: configurable Super+F1/F2/F3 mute/down/up commands execute once each OK');
+        console.log('graphical media keys: commands execute once; asynchronous level query and transient click-through OSD OK');
         console.log('graphical shortcuts: desktop/taskbar double-click multi-instance and single-click last-window activation OK');
-        console.log('graphical overview: wallpaper, green borders, taskbar stacking/actions and repeated MRU dismissal OK');
+        console.log('graphical overview: real client pixels, title/icon strips, eased opening, wallpaper and taskbar actions OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);
@@ -1104,6 +1216,7 @@ fi
     } finally {
         if (terminal && terminal.exitCode === null && terminal.signalCode === null) terminal.kill('SIGTERM');
         if (longTerminal && longTerminal.exitCode === null && longTerminal.signalCode === null) longTerminal.kill('SIGTERM');
+        if (pasteTerminal && pasteTerminal.exitCode === null && pasteTerminal.signalCode === null) pasteTerminal.kill('SIGTERM');
         if (filesApp && filesApp.exitCode === null && filesApp.signalCode === null) filesApp.kill('SIGTERM');
         if (wm && wm.exitCode === null && wm.signalCode === null) wm.kill('SIGTERM');
         if (conn) conn.terminate();

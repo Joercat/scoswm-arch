@@ -43,6 +43,7 @@ static GC gc;
 static XFontStruct *font;
 static XIM xim;
 static XIC xic;
+static int xim_composing;
 static Pixmap back;
 static int win_w = 700, win_h = 450;
 static int cell_w = 8, cell_h = 16, font_ascent = 12;
@@ -62,6 +63,8 @@ struct tab {
     int exited;
     int exit_status;
     int activity;
+    unsigned char *input_buffer;
+    size_t input_length, input_offset, input_capacity;
 };
 static struct tab *tabs[MAX_TABS];
 static int ntabs, active_tab;
@@ -212,22 +215,48 @@ static void update_title(void)
                     (unsigned char *)title, (int)strlen(title));
 }
 
+static void flush_input(struct tab *t)
+{
+    if (!t || t->fd < 0) return;
+    while (t->input_offset < t->input_length) {
+        ssize_t n = write(t->fd, t->input_buffer + t->input_offset,
+                          t->input_length - t->input_offset);
+        if (n > 0) { t->input_offset += (size_t)n; continue; }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        /* A closed PTY must not leave a permanent writable-poll busy loop. */
+        t->input_offset = t->input_length = 0;
+        return;
+    }
+    t->input_offset = t->input_length = 0;
+}
+
 static int write_input(struct tab *t, const void *data, size_t len)
 {
-    if (!t || t->fd < 0 || t->exited) return 0;
-    const char *p = data;
-    size_t done = 0;
-    while (done < len) {
-        ssize_t n = write(t->fd, p + done, len - done);
-        if (n > 0) { done += (size_t)n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            struct pollfd pfd = { t->fd, POLLOUT, 0 };
-            if (poll(&pfd, 1, 250) > 0) continue;
-        }
-        break;
+    if (!t || t->fd < 0 || t->exited || !data || !len) return 0;
+    if (t->input_offset) {
+        size_t remaining = t->input_length - t->input_offset;
+        memmove(t->input_buffer, t->input_buffer + t->input_offset, remaining);
+        t->input_length = remaining;
+        t->input_offset = 0;
     }
-    return (int)done;
+    if (len > SIZE_MAX - t->input_length) return 0;
+    size_t needed = t->input_length + len;
+    if (needed > t->input_capacity) {
+        size_t capacity = t->input_capacity ? t->input_capacity : 256;
+        while (capacity < needed) {
+            if (capacity > SIZE_MAX / 2) { capacity = needed; break; }
+            capacity *= 2;
+        }
+        void *resized = realloc(t->input_buffer, capacity);
+        if (!resized) return 0;
+        t->input_buffer = resized;
+        t->input_capacity = capacity;
+    }
+    memcpy(t->input_buffer + t->input_length, data, len);
+    t->input_length += len;
+    flush_input(t);
+    return (int)len;
 }
 
 static void paste_bytes(struct tab *t, const char *data, size_t len)
@@ -260,7 +289,9 @@ static void read_tab(struct tab *t)
     /* A deceased child's slave side can still have buffered output. */
     if (!t || t->fd < 0) return;
     unsigned char buf[8192];
-    for (int round = 0; round < 32; round++) {
+    /* Return to X input/drawing after a bounded burst. Draining 256 KiB
+     * before every repaint made continuous output starve keyboard handling. */
+    for (int round = 0; round < 4; round++) {
         ssize_t n = read(t->fd, buf, sizeof(buf));
         if (n > 0) {
             term_feed(&t->em, buf, (size_t)n);
@@ -287,6 +318,7 @@ static void close_tab(int index)
         t->pid = 0;
     }
     if (t->fd >= 0) close(t->fd);
+    free(t->input_buffer);
     term_free(&t->em);
     free(t);
     for (int i = index; i + 1 < ntabs; i++) tabs[i] = tabs[i + 1];
@@ -802,14 +834,19 @@ static void handle_key(XKeyEvent *e)
         write_input(t, &c, 1); return;
     }
     char buf[256];
-    int n;
-    if (xic) {
+    /* Ordinary ASCII must not make a synchronous round trip through a
+     * misbehaving or remote input-method server. Keep XIM for dead-key,
+     * compose and non-ASCII input, but use the direct X11 lookup for the
+     * normal Bash/readline typing path. */
+    int n = XLookupString(e, buf, sizeof(buf), NULL, NULL);
+    int ascii = n > 0;
+    for (int i = 0; i < n; i++)
+        if ((unsigned char)buf[i] >= 128) { ascii = 0; break; }
+    if (xic && !ascii) {
         KeySym text_sym;
         Status status = 0;
         n = XmbLookupString(xic, e, buf, sizeof(buf), &text_sym, &status);
         if (status != XLookupChars && status != XLookupBoth) n = 0;
-    } else {
-        n = XLookupString(e, buf, sizeof(buf), NULL, NULL);
     }
     if (n > 0) {
         if (alt) write_input(t, "\033", 1);
@@ -953,6 +990,21 @@ static void handle_selection_notify(XSelectionEvent *e)
     }
 }
 
+static int key_starts_composition(KeySym ks)
+{
+    return ks == XK_Multi_key || (ks >= 0xfe50 && ks <= 0xfe93);
+}
+
+static int key_requires_xim(XKeyEvent *e)
+{
+    if (!xic) return 0;
+    KeySym ks = XLookupKeysym(e, 0);
+    if (xim_composing || key_starts_composition(ks)) return 1;
+    /* Printable non-ASCII keysyms, including Unicode keysyms. Function,
+     * navigation and ordinary ASCII keys remain on the local fast path. */
+    return (ks >= 0x80 && ks <= 0xfeff) || ks >= 0x1000000;
+}
+
 static void handle_event(XEvent *e)
 {
     switch (e->type) {
@@ -984,6 +1036,7 @@ static void handle_event(XEvent *e)
         break;
     case FocusOut:
         focused = 0;
+        xim_composing = 0;
         if (xic) XUnsetICFocus(xic);
         need_redraw = 1;
         break;
@@ -1105,9 +1158,25 @@ int main(int argc, char **argv)
         while (XPending(dpy)) {
             XEvent e;
             XNextEvent(dpy, &e);
-            if (!XFilterEvent(&e, None)) handle_event(&e);
+            int key_press = e.type == KeyPress;
+            int needs_xim = key_press && key_requires_xim(&e.xkey);
+            int starts_composition = key_press &&
+                key_starts_composition(XLookupKeysym(&e.xkey, 0));
+            /* XFilterEvent can itself consult an input-method server. Do
+             * not put ordinary Bash/readline ASCII through that path. */
+            if ((!key_press || needs_xim) && XFilterEvent(&e, None)) {
+                if (starts_composition) xim_composing = 1;
+                else if (key_press) xim_composing = 0;
+                continue;
+            }
+            handle_event(&e);
+            if (starts_composition) xim_composing = 1;
+            else if (key_press && xim_composing) xim_composing = 0;
         }
-        for (int i = 0; i < ntabs; i++) read_tab(tabs[i]);
+        for (int i = 0; i < ntabs; i++) {
+            flush_input(tabs[i]);
+            read_tab(tabs[i]);
+        }
         reap_tabs();
         if (!running) break;
         if (need_redraw) draw();
@@ -1115,9 +1184,14 @@ int main(int argc, char **argv)
         int nfds = 1;
         fds[0].fd = ConnectionNumber(dpy); fds[0].events = POLLIN; fds[0].revents = 0;
         for (int i = 0; i < ntabs; i++) {
-            fds[nfds].fd = tabs[i]->fd; fds[nfds].events = tabs[i]->fd >= 0 ? POLLIN : 0;
+            fds[nfds].fd = tabs[i]->fd;
+            fds[nfds].events = tabs[i]->fd >= 0 ? POLLIN : 0;
+            if (tabs[i]->input_offset < tabs[i]->input_length) fds[nfds].events |= POLLOUT;
             fds[nfds].revents = 0; nfds++;
         }
+        /* Do not leave painted rows or selection requests buffered while
+         * sleeping. XPending() is not called again until after this wait. */
+        XFlush(dpy);
         poll(fds, nfds, 250);
     }
     while (ntabs) close_tab(ntabs - 1);

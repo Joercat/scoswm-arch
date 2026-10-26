@@ -143,13 +143,13 @@ startx
 | Arrange shortcuts | Drag a desktop icon to snap it to the nearest grid slot. Drag taskbar icons to reorder them, or drag in either direction between the desktop and taskbar to move a shortcut. The snap outline/insertion marker previews the drop and the layout is saved |
 | Select desktop icons | Click an icon, or click-hold-drag empty desktop to paint a rubber-band selection rectangle. Right-click empty desktop for the normal desktop menu |
 | Window list | Left-click **Windows N**. Running windows appear only in this picker and the visual overview, with their real icons; the main taskbar keeps only your pinned shortcuts |
-| Visual window overview | Right-click **Windows N** to show every open window as an on-demand Composite/direct-captured tile over the normal wallpaper (title/icon fallback when capture is unavailable). The most recently active window is largest at upper left, with green tile borders and a clean icon-free outer margin. The taskbar stays visible: right-click **Windows N** again to close, or use another taskbar action to close the overview and perform that action. Click a tile to focus it; `Esc` also closes |
+| Visual window overview | Right-click **Windows N** to show every open window as an on-demand Composite/direct-captured tile over the normal wallpaper. Tiles have persistent high-contrast title strips with application icons and green borders; the most recently active window is largest at upper left, with a clean icon-free outer margin and a short eased opening transition. The taskbar stays visible: right-click **Windows N** again to close, or use another taskbar action to close the overview and perform that action. Click a tile to focus it; `Esc` also closes |
 | Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
 | Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click the titlebar for a menu. Restore minimised windows from **Windows N**; minimise/restore transitions target that picker and never resize the real application |
 | Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
-| Mute / volume down / volume up | Dedicated `XF86AudioMute` / `XF86AudioLowerVolume` / `XF86AudioRaiseVolume` keys (including Fn combinations that emit them), or `Super+F1` / `Super+F2` / `Super+F3`. Plain F1–F3 remain application keys |
+| Mute / volume down / volume up | Dedicated `XF86AudioMute` / `XF86AudioLowerVolume` / `XF86AudioRaiseVolume` keys (including Fn combinations that emit them), or `Super+F1` / `Super+F2` / `Super+F3`. A transient click-through OSD asynchronously queries and shows the actual percentage and mute state. Plain F1–F3 remain application keys |
 | Playback / brightness | Standard play/pause, next, previous and monitor-brightness keys; playback uses `playerctl`, brightness uses `brightnessctl` or `light` when installed |
 | Wi-Fi | Click the taskbar antenna to see separate joined-network/hosted-hotspot counts and per-card status, scan, choose an active-first per-device network row, enter a password and connect; `F5` rescans and the wheel scrolls network rows |
 | Close focused window | `Alt+F4` or `Super+Q` |
@@ -322,8 +322,11 @@ windows open. An optional `~/.config/scoswm/autostart.sh` is run by
 Media command values are optional explicit shell commands. Empty values
 auto-detect `wpctl`/`pactl`/`amixer` for volume, `playerctl` for playback,
 and `brightnessctl`/`light` for brightness, without adding a settings or
-media daemon. If a laptop's Fn chord does not emit the standard XF86
-keysym, use the documented Super+F1/F2/F3 volume fallbacks instead.
+media daemon. Volume changes also start an asynchronous `wpctl`, `pactl`
+or `amixer` query for the on-screen percentage/mute display; the WM never
+waits synchronously for that status command. If a laptop's Fn chord does
+not emit the standard XF86 keysym, use the documented Super+F1/F2/F3
+volume fallbacks instead.
 
 There are deliberately **no multiple workspaces**: one workspace, no
 pager, no workspace daemon and no extra background process.
@@ -360,16 +363,21 @@ when a `node-x11` checkout with `lib/xserver` is available (set
 `SCOSWM_NODE_X11=/path/to/node-x11`). It checks the compact two-row date,
 Wi-Fi arc/dot geometry, 28 px taskbar bounds, power glyph and confirmation
 cancellation, high-contrast selections, panel-hover interiors,
-configurable media commands and dock stacking. The two-pixel right rule is
-checked above a covering real application and its empty SHAPE input region
-is checked by clicking a Files Close control beneath those visible pixels.
-Three real clients exercise the MRU visual overview, wallpaper, green tile
-borders, taskbar visibility/actions, repeated dismissal and tile activation.
+configurable media commands, asynchronous volume queries and the transient
+click-through level OSD. The one-pixel physical-edge right rule is checked
+above a covering real application, alongside its empty SHAPE input region
+and Files Close control access. Three real clients exercise the MRU visual
+overview, actual captured content pixels, persistent title/icon strips,
+eased opening, wallpaper, green borders, taskbar actions and repeated
+dismissal/activation. These headless checks do not prove physical Composite
+capture, animation, audio levels, edge placement or Terminal latency.
 
 Existing coverage retains the pinned-only taskbar, resize-free
 minimise/restore, 20 rapid window-withdrawal/reuse cycles, all built-in
 images, Qt/GTK cursor publication and inheritance, buffered terminal
-resize/move, changed-row Bash/arrow repainting, long-title Close clipping,
+resize/move, changed-row Bash/arrow repainting, bounded echo repaint arrival,
+a nonblocking 128 KiB delayed-reader paste with byte-count verification,
+long-title Close clipping,
 and mouse-opened Settings with live persisted scaling. Standalone Files is
 driven through real navigation, creation and rename. A delayed fake
 `nmcli` checks nonblocking scans, active-first rows, scrolling and

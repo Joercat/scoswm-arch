@@ -63,8 +63,8 @@
 #define TOP_H (TITLE_H + 1)          /* titlebar + top border */
 #define DESK_COL_W 88
 #define DESK_ROW_H 96
-#define DESK_EDGE_GAP 16          /* keep the right rule off physical overscan */
-#define DESK_RULE_W 2
+#define DESK_EDGE_GAP 0           /* right border shares the physical edge */
+#define DESK_RULE_W 1
 #define BAR_DATE_W 48
 #define BAR_CLOCK_W 76
 #define BAR_SECTION_GAP 8
@@ -74,8 +74,8 @@
 /* ------------------------------------------------------------------ state */
 static Display *dpy;
 static int scr_no;
-static Window root, wmcheck, xsettings_win, bar_win, edge_win, launch_win, menu_win, tool_win, anim_win, overview_win;
-static int edge_input_passthrough;
+static Window root, wmcheck, xsettings_win, bar_win, edge_win, launch_win, menu_win, tool_win, anim_win, overview_win, volume_osd_win;
+static int edge_input_passthrough, volume_osd_passthrough;
 static GC gc;
 static XFontStruct *font;
 static int screen_w, screen_h;
@@ -1720,13 +1720,13 @@ static void paint_desktop(Drawable d)
      * then immediately covered by the pixmap copy, which both hid the
      * grid and made every repaint visibly flicker. */
     paint_wallpaper(d, screen_w, screen_h);
-    /* Keep a wallpaper fallback beneath the dedicated two-pixel edge
+    /* Keep a wallpaper fallback beneath the dedicated physical-edge
      * surface. The click-through surface keeps the rule above app frames
      * and independent of root background restoration. */
     int desktop_h = screen_h - bar_h;
     int right_rule = desktop_right_rule();
     rect(d, 0, 0, right_rule + 1, desktop_h, PX.main);
-    fill(d, right_rule, 0, 2, desktop_h, PX.main);
+    fill(d, right_rule, 0, DESK_RULE_W, desktop_h, PX.main);
 
     /* Independent desktop shortcuts on a persistent snap grid. */
     int icon_size = cfg.desktop_icon_size;
@@ -2449,7 +2449,11 @@ static void pick_window(Window target)
 }
 
 /* ------------------------------------------------------- window overview */
+#define OVERVIEW_ANIMATION_MS 120
+#define OVERVIEW_ANIMATION_OFFSET 12
 static int overview_release_pending;
+static int overview_animation_active;
+static long long overview_animation_started;
 
 static int overview_screen_height(void)
 {
@@ -2465,8 +2469,9 @@ static void overview_free_tiles(void)
     overview_tiles = NULL; overview_count = 0; overview_hover = -1;
 }
 
-static int composite_state;
+static int composite_state, overview_capture_diagnostics;
 static Bool (*composite_query_extension)(Display *, int *, int *);
+static Status (*composite_query_version)(Display *, int *, int *);
 static void (*composite_redirect_window)(Display *, Window, int);
 static void (*composite_unredirect_window)(Display *, Window, int);
 static Pixmap (*composite_name_window_pixmap)(Display *, Window);
@@ -2479,16 +2484,24 @@ static int overview_composite_available(void)
     if (!library) return 0;
     composite_query_extension = (Bool (*)(Display *, int *, int *))
         dlsym(library, "XCompositeQueryExtension");
+    composite_query_version = (Status (*)(Display *, int *, int *))
+        dlsym(library, "XCompositeQueryVersion");
     composite_redirect_window = (void (*)(Display *, Window, int))
         dlsym(library, "XCompositeRedirectWindow");
     composite_unredirect_window = (void (*)(Display *, Window, int))
         dlsym(library, "XCompositeUnredirectWindow");
     composite_name_window_pixmap = (Pixmap (*)(Display *, Window))
         dlsym(library, "XCompositeNameWindowPixmap");
-    if (!composite_query_extension || !composite_redirect_window ||
+    if (!composite_query_extension || !composite_query_version || !composite_redirect_window ||
         !composite_unredirect_window || !composite_name_window_pixmap) return 0;
     int event_base = 0, error_base = 0;
     if (!composite_query_extension(dpy, &event_base, &error_base)) return 0;
+    /* NameWindowPixmap requires Composite 0.2 and QueryVersion must precede
+     * every other Composite call. Skipping this negotiation left subsequent
+     * requests undefined on an otherwise capable Xorg server. */
+    int major = 0, minor = 0;
+    if (!composite_query_version(dpy, &major, &minor) || major < 0 ||
+        (major == 0 && minor < 2)) return 0;
     composite_state = 1;
     return 1;
 }
@@ -2544,7 +2557,8 @@ static void overview_capture(struct overview_tile *tile, struct client *c)
     Drawable source_drawable = c->win;
     Pixmap named = None;
     int unredirect = 0;
-    if (overview_composite_available()) {
+    int composite_attempted = overview_composite_available();
+    if (composite_attempted) {
         Atom compositor_atom = XInternAtom(dpy, "_NET_WM_CM_S0", True);
         int external_compositor = compositor_atom && XGetSelectionOwner(dpy, compositor_atom);
         if (!external_compositor) composite_redirect_window(dpy, c->win, 0);
@@ -2556,6 +2570,10 @@ static void overview_capture(struct overview_tile *tile, struct client *c)
             composite_unredirect_window(dpy, c->win, 0);
         }
     }
+    if (composite_attempted && !named && !(overview_capture_diagnostics & 1)) {
+        fprintf(stderr, "scoswm: overview named-pixmap capture unavailable; trying direct X11 capture\n");
+        overview_capture_diagnostics |= 1;
+    }
     XImage *source = XGetImage(dpy, source_drawable, 0, 0, (unsigned int)c->w, (unsigned int)c->h,
                                AllPlanes, ZPixmap);
     if (named) XFreePixmap(dpy, named);
@@ -2563,7 +2581,13 @@ static void overview_capture(struct overview_tile *tile, struct client *c)
     if (!source && source_drawable != c->win)
         source = XGetImage(dpy, c->win, 0, 0, (unsigned int)c->w, (unsigned int)c->h,
                            AllPlanes, ZPixmap);
-    if (!source) return;
+    if (!source) {
+        if (!(overview_capture_diagnostics & 2)) {
+            fprintf(stderr, "scoswm: overview could not read application pixels for a preview\n");
+            overview_capture_diagnostics |= 2;
+        }
+        return;
+    }
     if (!source->data || !source->red_mask || !source->green_mask || !source->blue_mask) {
         XDestroyImage(source); return;
     }
@@ -2703,12 +2727,21 @@ static void draw_overview(void)
             rect(d, tile->x, tile->y, tile->w, tile->h, PX.main);
             continue;
         }
-        fill(d, tile->x + 1, tile->y + 1, tile->w - 2, 24, lit ? PX.main : PX.title_off);
+        /* Titles are primary content, not hover-only decoration. A bright
+         * strip with dark text stays readable in every theme. */
+        fill(d, tile->x + 1, tile->y + 1, tile->w - 2, 24, PX.main);
+        if (lit) rect(d, tile->x + 1, tile->y + 1, tile->w - 2, 24, PX.title_text);
         char title[300];
         snprintf(title, sizeof(title), "%s%.270s", c && c->minimized ? "[-] " : "",
                  c ? c->title : "Closed window");
-        clipped_text(d, tile->x + 8, tile->y + 5 + font->ascent, title,
-                     tile->w - 16, lit ? PX.title_text : PX.text);
+        int title_x = tile->x + 8;
+        if (c && xicon_drawn(c->icon)) {
+            draw_xicon(d, c->icon, tile->x + 6,
+                       tile->y + 2 + (20 - c->icon->h) / 2);
+            title_x = tile->x + 28;
+        }
+        clipped_text(d, title_x, tile->y + 5 + font->ascent, title,
+                     tile->x + tile->w - 8 - title_x, PX.title_text);
         int cw = tile->w - 4, ch = tile->h - 28;
         if (tile->preview) {
             int px = tile->x + 2 + (cw - tile->preview_w) / 2;
@@ -2728,6 +2761,22 @@ static void draw_overview(void)
         rect(d, tile->x, tile->y, tile->w, tile->h, PX.main);
     }
     surface_present(overview_win, pm, screen_w, height);
+}
+
+static void overview_animation_tick(void)
+{
+    if (!overview_animation_active) return;
+    long long elapsed = monotonic_msec() - overview_animation_started;
+    if (elapsed >= OVERVIEW_ANIMATION_MS) {
+        overview_animation_active = 0;
+        XMoveWindow(dpy, overview_win, 0, 0);
+        return;
+    }
+    double t = (double)elapsed / OVERVIEW_ANIMATION_MS;
+    double remaining = 1.0 - t;
+    double eased_remaining = remaining * remaining * remaining;
+    int y = (int)(OVERVIEW_ANIMATION_OFFSET * eased_remaining + 0.5);
+    XMoveWindow(dpy, overview_win, 0, y);
 }
 
 static void overview_map_below_bar(void)
@@ -2751,6 +2800,7 @@ static void overview_close(void)
 {
     if (!overview_active) { overview_free_tiles(); return; }
     overview_active = 0; overview_release_pending = 0;
+    overview_animation_active = 0;
     XUnmapWindow(dpy, overview_win);
     XUngrabKeyboard(dpy, CurrentTime);
     overview_free_tiles();
@@ -2776,9 +2826,12 @@ static void overview_show(void)
     overview_active = 1; overview_release_pending = 1;
     overview_rebuild();
     if (!overview_count) { overview_close(); return; }
-    XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, overview_screen_height());
+    XMoveResizeWindow(dpy, overview_win, 0, OVERVIEW_ANIMATION_OFFSET,
+                      screen_w, overview_screen_height());
     XUnmapWindow(dpy, edge_win);
     overview_map_below_bar();
+    overview_animation_started = monotonic_msec();
+    overview_animation_active = 1;
     XGrabKeyboard(dpy, root, True, GrabModeAsync, GrabModeAsync, CurrentTime);
     draw_overview(); draw_bar();
 }
@@ -2786,7 +2839,9 @@ static void overview_show(void)
 static void overview_clients_changed(void)
 {
     if (!overview_active) return;
+    overview_animation_active = 0;
     XUnmapWindow(dpy, overview_win);
+    XMoveWindow(dpy, overview_win, 0, 0);
     overview_rebuild();
     if (!overview_count) { overview_close(); return; }
     overview_map_below_bar();
@@ -3333,6 +3388,202 @@ static void on_motion(XMotionEvent *e)
     }
 }
 
+#define VOLUME_OSD_W 260
+#define VOLUME_OSD_H 72
+#define VOLUME_OSD_VISIBLE_MS 1800
+#define VOLUME_OSD_ANIMATION_MS 120
+static Pixmap volume_osd_pm;
+static int volume_osd_pm_w, volume_osd_pm_h;
+static int volume_osd_visible, volume_osd_level = -1, volume_osd_muted = -1;
+static int volume_osd_y = -1;
+static long long volume_osd_started, volume_osd_expires, volume_query_due;
+static struct {
+    int fd;
+    pid_t pid;
+    size_t length;
+    char output[4096];
+} volume_job = { .fd = -1 };
+
+static int volume_osd_target_y(void)
+{
+    return screen_h - bar_h - VOLUME_OSD_H - 16;
+}
+
+static void draw_volume_osd(void)
+{
+    if (!volume_osd_visible) return;
+    Pixmap pm = surface_backing(volume_osd_win, &volume_osd_pm,
+                                &volume_osd_pm_w, &volume_osd_pm_h,
+                                VOLUME_OSD_W, VOLUME_OSD_H);
+    Drawable d = pm ? pm : volume_osd_win;
+    fill(d, 0, 0, VOLUME_OSD_W, VOLUME_OSD_H, PX.win_bg);
+    rect(d, 0, 0, VOLUME_OSD_W, VOLUME_OSD_H, PX.main);
+    const char *heading = volume_osd_muted == 1 ? "Audio muted" : "Volume";
+    if (volume_osd_level < 0) heading = "Volume changed";
+    text_out(d, 16, 12 + font->ascent, heading, PX.main);
+    char value[48];
+    if (volume_osd_level >= 0) snprintf(value, sizeof(value), "%d%%", volume_osd_level);
+    else snprintf(value, sizeof(value), "unknown");
+    int width = text_w(value);
+    text_out(d, VOLUME_OSD_W - 16 - width, 12 + font->ascent, value, PX.text);
+    rect(d, 16, 42, VOLUME_OSD_W - 32, 14, PX.main);
+    if (volume_osd_level > 0) {
+        int clamped = volume_osd_level > 100 ? 100 : volume_osd_level;
+        int bar_width = (VOLUME_OSD_W - 34) * clamped / 100;
+        fill(d, 17, 43, bar_width, 12,
+             volume_osd_muted == 1 ? PX.title_off : PX.main);
+    }
+    surface_present(volume_osd_win, pm, VOLUME_OSD_W, VOLUME_OSD_H);
+}
+
+static void volume_osd_show(int level, int muted)
+{
+    if (!volume_osd_passthrough) return;
+    long long now = monotonic_msec();
+    int was_visible = volume_osd_visible;
+    if (!was_visible) {
+        volume_osd_started = now;
+        volume_osd_y = -1;
+    }
+    volume_osd_visible = 1;
+    volume_osd_level = level;
+    volume_osd_muted = muted;
+    volume_osd_expires = now + VOLUME_OSD_VISIBLE_MS;
+    int x = (screen_w - VOLUME_OSD_W) / 2;
+    int y = was_visible && volume_osd_y >= 0 ? volume_osd_y : volume_osd_target_y() + 10;
+    XMoveWindow(dpy, volume_osd_win, x, y);
+    volume_osd_y = y;
+    XMapWindow(dpy, volume_osd_win);
+    XWindowChanges wc;
+    wc.sibling = bar_win;
+    wc.stack_mode = Below;
+    XConfigureWindow(dpy, volume_osd_win, CWSibling | CWStackMode, &wc);
+    draw_volume_osd();
+}
+
+static void volume_osd_tick(void)
+{
+    if (!volume_osd_visible) return;
+    long long now = monotonic_msec();
+    if (now >= volume_osd_expires) {
+        volume_osd_visible = 0;
+        XUnmapWindow(dpy, volume_osd_win);
+        return;
+    }
+    long long age = now - volume_osd_started;
+    long long remaining = volume_osd_expires - now;
+    int offset = 0;
+    if (age < VOLUME_OSD_ANIMATION_MS) {
+        double t = 1.0 - (double)age / VOLUME_OSD_ANIMATION_MS;
+        offset = (int)(10.0 * t * t * t + 0.5);
+    } else if (remaining < VOLUME_OSD_ANIMATION_MS) {
+        double t = 1.0 - (double)remaining / VOLUME_OSD_ANIMATION_MS;
+        offset = (int)(10.0 * t * t * t + 0.5);
+    }
+    int y = volume_osd_target_y() + offset;
+    if (y != volume_osd_y) {
+        XMoveWindow(dpy, volume_osd_win, (screen_w - VOLUME_OSD_W) / 2, y);
+        volume_osd_y = y;
+    }
+}
+
+static int volume_osd_animating(void)
+{
+    if (!volume_osd_visible) return 0;
+    long long now = monotonic_msec();
+    return now - volume_osd_started < VOLUME_OSD_ANIMATION_MS ||
+           volume_osd_expires - now < VOLUME_OSD_ANIMATION_MS;
+}
+
+static const char *volume_query_command(void)
+{
+    if (cmd_exists("wpctl")) return "wpctl get-volume @DEFAULT_AUDIO_SINK@";
+    if (cmd_exists("pactl"))
+        return "pactl get-sink-volume @DEFAULT_SINK@; pactl get-sink-mute @DEFAULT_SINK@";
+    if (cmd_exists("amixer")) return "amixer sget Master";
+    return NULL;
+}
+
+static void volume_query_stop(void)
+{
+    if (volume_job.fd >= 0) close(volume_job.fd);
+    if (volume_job.pid > 0) kill(volume_job.pid, SIGHUP);
+    volume_job.fd = -1;
+    volume_job.pid = 0;
+    volume_job.length = 0;
+}
+
+static void volume_query_start(void)
+{
+    const char *query = volume_query_command();
+    if (!query) { volume_osd_show(-1, -1); return; }
+    volume_query_stop();
+    int pipes[2];
+    if (pipe(pipes) != 0) { volume_osd_show(-1, -1); return; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pipes[0]);
+        dup2(pipes[1], STDOUT_FILENO);
+        dup2(pipes[1], STDERR_FILENO);
+        close(pipes[1]);
+        close(ConnectionNumber(dpy));
+        execl("/bin/sh", "sh", "-c", query, (char *)NULL);
+        _exit(127);
+    }
+    if (pid < 0) {
+        close(pipes[0]); close(pipes[1]);
+        volume_osd_show(-1, -1); return;
+    }
+    close(pipes[1]);
+    int flags = fcntl(pipes[0], F_GETFL, 0);
+    if (flags >= 0) fcntl(pipes[0], F_SETFL, flags | O_NONBLOCK);
+    volume_job.fd = pipes[0];
+    volume_job.pid = pid;
+    volume_job.length = 0;
+}
+
+static void volume_query_finish(void)
+{
+    if (volume_job.fd < 0) return;
+    close(volume_job.fd);
+    volume_job.fd = -1;
+    volume_job.pid = 0;
+    volume_job.output[volume_job.length] = 0;
+    int level = -1, muted = -1;
+    if (parse_volume_status_text(volume_job.output, &level, &muted))
+        volume_osd_show(level, muted);
+    else volume_osd_show(-1, -1);
+}
+
+static void volume_query_read(void)
+{
+    if (volume_job.fd < 0) return;
+    for (int round = 0; round < 8; round++) {
+        char buffer[1024];
+        ssize_t n = read(volume_job.fd, buffer, sizeof(buffer));
+        if (n > 0) {
+            size_t available = sizeof(volume_job.output) - 1 - volume_job.length;
+            size_t copy = (size_t)n < available ? (size_t)n : available;
+            memcpy(volume_job.output + volume_job.length, buffer, copy);
+            volume_job.length += copy;
+            continue;
+        }
+        if (n == 0) { volume_query_finish(); return; }
+        if (errno == EINTR) continue;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return;
+        volume_query_finish(); return;
+    }
+}
+
+static void volume_control_tick(void)
+{
+    if (volume_query_due && monotonic_msec() >= volume_query_due) {
+        volume_query_due = 0;
+        volume_query_start();
+    }
+    volume_osd_tick();
+}
+
 enum { MEDIA_VOLUME_MUTE, MEDIA_VOLUME_DOWN, MEDIA_VOLUME_UP,
        MEDIA_PLAY_PAUSE, MEDIA_NEXT, MEDIA_PREVIOUS,
        MEDIA_BRIGHTNESS_UP, MEDIA_BRIGHTNESS_DOWN };
@@ -3391,7 +3642,10 @@ static const char *media_command(int action)
 static void run_media_action(int action)
 {
     const char *command = media_command(action);
-    if (command) spawn(command);
+    if (!command) return;
+    spawn(command);
+    if (action == MEDIA_VOLUME_MUTE || action == MEDIA_VOLUME_DOWN || action == MEDIA_VOLUME_UP)
+        volume_query_due = monotonic_msec() + 180;
 }
 
 static int media_key_action(KeySym ks)
@@ -3905,7 +4159,16 @@ static void create_ui_windows(void)
                                  CWBackPixel | CWEventMask | CWOverrideRedirect |
                                  (wm_cursor ? CWCursor : 0), &at);
     XStoreName(dpy, overview_win, "SCosWM window overview");
-    Window buffered[] = { bar_win, launch_win, menu_win, tool_win, anim_win, overview_win };
+    at.event_mask = ExposureMask;
+    volume_osd_win = XCreateWindow(dpy, root, 0, 0, VOLUME_OSD_W, VOLUME_OSD_H, 0,
+                                   CopyFromParent, InputOutput, CopyFromParent,
+                                   CWBackPixel | CWEventMask | CWOverrideRedirect, &at);
+    XStoreName(dpy, volume_osd_win, "SCosWM volume status");
+    if (edge_input_passthrough) {
+        XShapeCombineRectangles(dpy, volume_osd_win, ShapeInput, 0, 0, NULL, 0, ShapeSet, Unsorted);
+        volume_osd_passthrough = 1;
+    }
+    Window buffered[] = { bar_win, launch_win, menu_win, tool_win, anim_win, overview_win, volume_osd_win };
     for (unsigned int i = 0; i < sizeof(buffered) / sizeof(buffered[0]); i++)
         XSetWindowBackgroundPixmap(dpy, buffered[i], None);
 }
@@ -3967,6 +4230,7 @@ static void redraw_everything(void)
         draw_right_rule();
     }
     XSetWindowBackground(dpy, overview_win, PX.bg_top);
+    XSetWindowBackground(dpy, volume_osd_win, PX.win_bg);
     for (int i = 0; i < nclients; i++) {
         XSetWindowBackground(dpy, clients[i]->frame, PX.win_bg);
         draw_frame(clients[i]);
@@ -3976,6 +4240,7 @@ static void redraw_everything(void)
     if (launch_open) draw_launcher();
     if (menu_kind != MENU_NONE) draw_menu();
     if (overview_active) draw_overview();
+    if (volume_osd_visible) draw_volume_osd();
 }
 
 static void apply_theme_live(int idx)
@@ -4973,6 +5238,7 @@ int main(int argc, char **argv)
                     screen_w = ev.xconfigure.width; screen_h = ev.xconfigure.height;
                     XMoveResizeWindow(dpy, edge_win, desktop_right_rule(), 0, DESK_RULE_W, screen_h - bar_h);
                     XMoveResizeWindow(dpy, bar_win, 0, screen_h - bar_h, screen_w, bar_h);
+                    overview_animation_active = 0;
                     XMoveResizeWindow(dpy, overview_win, 0, 0, screen_w, overview_screen_height());
                     desktop_normalize_slots(); pins_sync_config();
                     draw_desktop(); draw_bar(); recalc_struts();
@@ -5057,6 +5323,7 @@ int main(int argc, char **argv)
                     else if (ev.xexpose.window == bar_win) draw_bar();
                     else if (ev.xexpose.window == edge_win) draw_right_rule();
                     else if (ev.xexpose.window == overview_win) draw_overview();
+                    else if (ev.xexpose.window == volume_osd_win) draw_volume_osd();
                     else if (ev.xexpose.window == launch_win) draw_launcher();
                     else if (ev.xexpose.window == menu_win) draw_menu();
                     else if (ev.xexpose.window == tool_win) draw_tool();
@@ -5070,6 +5337,8 @@ int main(int argc, char **argv)
                 break;
             }
         }
+        overview_animation_tick();
+        volume_control_tick();
         /* 1 Hz clock/tick + asynchronous Wi-Fi output, without busy-waiting. */
         int fd = ConnectionNumber(dpy);
         fd_set rf; FD_ZERO(&rf); FD_SET(fd, &rf);
@@ -5078,9 +5347,23 @@ int main(int argc, char **argv)
             FD_SET(wifi_job.fd, &rf);
             if (wifi_job.fd > maxfd) maxfd = wifi_job.fd;
         }
-        struct timeval tv = { 0, taskbar_launch_pending ? 50000 : 250000 };
+        if (volume_job.fd >= 0) {
+            FD_SET(volume_job.fd, &rf);
+            if (volume_job.fd > maxfd) maxfd = volume_job.fd;
+        }
+        int timeout_us = taskbar_launch_pending ? 50000 : 250000;
+        if (overview_animation_active && timeout_us > 16000) timeout_us = 16000;
+        if (volume_osd_animating() && timeout_us > 16000) timeout_us = 16000;
+        if (volume_query_due) {
+            long long remaining = volume_query_due - monotonic_msec();
+            if (remaining < 0) remaining = 0;
+            int query_timeout = (int)(remaining * 1000);
+            if (timeout_us > query_timeout) timeout_us = query_timeout;
+        }
+        struct timeval tv = { timeout_us / 1000000, timeout_us % 1000000 };
         int selected = select(maxfd + 1, &rf, NULL, NULL, &tv);
         if (selected > 0 && wifi_job.fd >= 0 && FD_ISSET(wifi_job.fd, &rf)) wifi_job_read();
+        if (selected > 0 && volume_job.fd >= 0 && FD_ISSET(volume_job.fd, &rf)) volume_query_read();
         if (taskbar_launch_pending && monotonic_msec() - taskbar_pending_since >= 400) {
             taskbar_launch_pending = 0;
             launch_pin_new(&taskbar_pending_pin);
@@ -5102,6 +5385,7 @@ int main(int argc, char **argv)
      * the next WM) finds plain top-level windows */
     overview_close();
     wifi_job_stop();
+    volume_query_stop();
     while (nclients) remove_client(clients[0], 1);
     XChangeProperty(dpy, root, atoms[A_NET_SUPPORTED], XA_ATOM, 32, PropModeReplace, NULL, 0);
     XCloseDisplay(dpy);

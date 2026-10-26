@@ -1,3 +1,27 @@
+scoswm (0.5.10) unstable; urgency=medium
+
+  * Move the right desktop rule to a one-pixel physical-edge surface with a
+    matching wallpaper fallback, retaining buffered above-frame rendering
+    and its empty SHAPE input region for click-through application controls.
+  * Negotiate Composite 0.2 before redirection/named-pixmap capture, retain
+    direct X11 preview capture, and report capture fallback failures once.
+    Make overview title strips persistently high contrast, add application
+    icons, verify real client pixels, and add a short eased opening move.
+  * Add asynchronous wpctl/pactl/amixer level queries after volume actions
+    and a transient click-through OSD with numeric percentage, mute state,
+    level bar and restrained animation. Volume command overrides remain.
+  * Reduce Terminal stalls with bounded PTY reads, queued nonblocking input,
+    a pre-poll X flush, and a local ASCII path that bypasses XIM filtering
+    outside dead-key/compose/non-ASCII sequences. Preserve genuine Bash,
+    readline, incremental row rendering and standalone terminal behavior.
+  * Expand unit/graphical coverage for volume parsers/OSD, physical-edge
+    geometry, real overview content/title/icon/animation, echo repaint
+    arrival and a delayed-reader 128 KiB queued paste. Headless success does
+    not prove physical previews, animation,
+    audio levels, border placement or Terminal latency; retest on target.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 00:29:24 -0400
+
 scoswm (0.5.9) unstable; urgency=medium
 
   * Correct the on-demand Composite loader to libXcomposite.so.1 and the

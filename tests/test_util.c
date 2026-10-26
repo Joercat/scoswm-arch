@@ -138,6 +138,19 @@ int main(void)
     CHECK(!strcmp(cfg.desktop_slots, "7,2"));
     CHECK(cfg.desktop_grid == 0 && cfg.desktop_icon_size == 32);
 
+    /* Volume OSD parsers for all supported nonblocking query backends. */
+    int volume = -1, muted = -1;
+    CHECK(parse_volume_status_text("Volume: 0.65 [MUTED]\n", &volume, &muted));
+    CHECK(volume == 65 && muted == 1);
+    CHECK(parse_volume_status_text("Volume: front-left: 65536 / 42% / -12.00 dB\nMute: no\n",
+                                  &volume, &muted));
+    CHECK(volume == 42 && muted == 0);
+    CHECK(parse_volume_status_text("Front Left: Playback 55 [73%] [on]\n", &volume, &muted));
+    CHECK(volume == 73 && muted == 0);
+    CHECK(parse_volume_status_text("noise 99%\nSCOSWM_VOLUME\nVolume: 0.35\n", &volume, &muted));
+    CHECK(volume == 35);
+    CHECK(!parse_volume_status_text("no volume status", &volume, &muted));
+
     /* Linux /proc parsers used by SysMon */
     struct linux_meminfo mem;
     CHECK(parse_meminfo_text("MemTotal:       16384000 kB\nMemFree:         1024000 kB\n"

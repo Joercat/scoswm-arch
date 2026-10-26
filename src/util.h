@@ -85,6 +85,7 @@ struct linux_meminfo {
 };
 /* Parsers accept complete file text so they can be unit-tested without
  * depending on the host's live /proc contents. */
+int parse_volume_status_text(const char *text, int *volume, int *muted);
 int parse_meminfo_text(const char *text, struct linux_meminfo *out);
 int parse_cpu_stat_text(const char *text, unsigned long long *idle,
                         unsigned long long *total);

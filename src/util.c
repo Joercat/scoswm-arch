@@ -340,6 +340,45 @@ static int meminfo_value(const char *text, const char *key, unsigned long *out)
     return 1;
 }
 
+int parse_volume_status_text(const char *text, int *volume, int *muted)
+{
+    if (!text || !volume || !muted) return 0;
+    const char *marker = strstr(text, "SCOSWM_VOLUME");
+    if (marker) {
+        const char *newline = strchr(marker, '\n');
+        if (newline) text = newline + 1;
+    }
+    int level = -1, state = -1;
+    const char *v = strstr(text, "Volume:");
+    if (v) {
+        v += 7;
+        while (isspace((unsigned char)*v)) v++;
+        char *end = NULL;
+        double fraction = strtod(v, &end);
+        if (end != v && fraction >= 0.0 && fraction <= 4.0)
+            level = (int)(fraction * 100.0 + 0.5); /* wpctl get-volume */
+    }
+    if (level < 0) {
+        for (const char *p = text; *p; p++) {
+            if (!isdigit((unsigned char)*p)) continue;
+            char *end = NULL;
+            long value = strtol(p, &end, 10);
+            if (end == p) continue;
+            while (isspace((unsigned char)*end)) end++;
+            if (*end == '%') { level = (int)value; break; } /* pactl/amixer */
+            if (!*end) break;
+            p = end;
+        }
+    }
+    if (strstr(text, "[MUTED]") || strstr(text, "Mute: yes") || strstr(text, "[off]")) state = 1;
+    else if (strstr(text, "Mute: no") || strstr(text, "[on]")) state = 0;
+    if (level < 0 && state < 0) return 0;
+    if (level > 200) level = 200;
+    *volume = level;
+    *muted = state;
+    return 1;
+}
+
 int parse_meminfo_text(const char *text, struct linux_meminfo *out)
 {
     if (!text || !out) return 0;

@@ -5,7 +5,7 @@
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.9"'
+CPPFLAGS += -DVERSION='"0.5.10"'
 LDLIBS    = -lX11 -lz -ldl
 WM_LDLIBS = -lX11 -lXext -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl

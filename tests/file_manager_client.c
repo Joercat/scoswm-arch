@@ -39,6 +39,18 @@ static void set_icons(Display *dpy, Window win, unsigned int phase)
     free(icon);
 }
 
+static void draw_content(Display *dpy, Window win, GC gc)
+{
+    XSetForeground(dpy, gc, 0x3465a4);
+    XFillRectangle(dpy, win, gc, 0, 0, 460, 320);
+    XSetForeground(dpy, gc, 0xc03030);
+    XFillRectangle(dpy, win, gc, 20, 30, 120, 100);
+    XSetForeground(dpy, gc, 0xd0c040);
+    XFillRectangle(dpy, win, gc, 160, 30, 120, 100);
+    XSetForeground(dpy, gc, 0x204020);
+    XFillRectangle(dpy, win, gc, 20, 160, 260, 100);
+}
+
 int main(void)
 {
     Display *dpy = XOpenDisplay(NULL);
@@ -56,7 +68,10 @@ int main(void)
     XSetWMProtocols(dpy, win, &delete_window, 1);
     XSelectInput(dpy, win, ExposureMask | StructureNotifyMask);
     set_icons(dpy, win, 0);
+    GC gc = XCreateGC(dpy, win, 0, NULL);
+    if (!gc) return 4;
     XMapWindow(dpy, win);
+    draw_content(dpy, win, gc);
     XFlush(dpy);
 
     unsigned int phase = 0;
@@ -64,7 +79,9 @@ int main(void)
         while (XPending(dpy)) {
             XEvent event;
             XNextEvent(dpy, &event);
+            if (event.type == Expose) draw_content(dpy, win, gc);
             if (event.type == DestroyNotify) {
+                XFreeGC(dpy, gc);
                 XCloseDisplay(dpy);
                 return 0;
             }
@@ -72,6 +89,7 @@ int main(void)
                 (Atom)event.xclient.message_type == protocols &&
                 (Atom)event.xclient.data.l[0] == delete_window) {
                 XDestroyWindow(dpy, win);
+                XFreeGC(dpy, gc);
                 XCloseDisplay(dpy);
                 return 0;
             }
