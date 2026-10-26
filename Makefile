@@ -1,11 +1,12 @@
 # scoswm — SCos-styled X11 window manager for real Linux applications.
-# Only hard dependencies: libX11, zlib and the POSIX PTY interface.
-# No compositor, no toolkit, no terminal emulation library.
+# Only hard dependencies: libX11, libXext (SHAPE input regions), zlib and
+# the POSIX PTY interface. No compositor, toolkit or terminal library.
 
 CC       ?= cc
 CFLAGS   ?= -O2 -g
-CPPFLAGS += -DVERSION='"0.5.6"'
+CPPFLAGS += -DVERSION='"0.5.7"'
 LDLIBS    = -lX11 -lz -ldl
+WM_LDLIBS = -lX11 -lXext -lz -ldl
 TERM_LDLIBS = -lX11 -lz -lutil -ldl
 PREFIX   ?= /usr
 DESTDIR  ?=
@@ -17,7 +18,7 @@ FILES_SRC = src/scos-files.c src/files_core.c src/util.c
 all: scoswm scos-terminal scos-files
 
 scoswm: $(SRC) src/util.h src/wifi.h
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -o $@ $(SRC) $(LDFLAGS) $(WM_LDLIBS)
 
 scos-terminal: $(TERM_SRC) src/term_emulation.h src/util.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -Wall -Wextra -Wno-unused-parameter -o $@ $(TERM_SRC) $(LDFLAGS) $(TERM_LDLIBS)

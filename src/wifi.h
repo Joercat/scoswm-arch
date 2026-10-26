@@ -14,19 +14,23 @@ struct wifi_adapter {
     int quality;
     int signal_dbm;
     int enabled;
-    int connected;
+    int connected;                 /* joined a network as a client */
+    int hosted;                    /* running an access-point hotspot */
 };
 
 struct wifi_network {
     char ssid[WIFI_SSID_MAX];
     char security[WIFI_SECURITY_MAX];
     char device[WIFI_IFNAME_MAX];
-    int signal;
+    int signal;                    /* -1 when only local active state is known */
     int in_use;
+    int hosted;                    /* active row is our hotspot, not a joined network */
 };
 
 int wifi_parse_proc_wireless(const char *text, struct wifi_adapter *out, int maximum);
 int wifi_scan_adapters(struct wifi_adapter *out, int maximum);
 int wifi_parse_nmcli_networks(const char *text, struct wifi_network *out, int maximum);
+int wifi_merge_adapter_activity(struct wifi_network *networks, int count, int maximum,
+                                const struct wifi_adapter *adapters, int adapter_count);
 
 #endif

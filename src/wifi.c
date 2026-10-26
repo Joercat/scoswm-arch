@@ -123,6 +123,13 @@ int wifi_scan_adapters(struct wifi_adapter *out, int maximum)
         snprintf(req.ifr_name, sizeof(req.ifr_name), "%s", out[i].name);
         snprintf(flags.ifr_name, sizeof(flags.ifr_name), "%s", out[i].name);
         if (ioctl(fd, SIOCGIFFLAGS, &flags) == 0) out[i].enabled = (flags.ifr_flags & IFF_UP) != 0;
+        /* A hosted AP also has an ESSID, but it is not another network the
+         * machine joined. Keep it separate so one client connection plus
+         * one hotspot is reported honestly as one of each. */
+        memset(&req, 0, sizeof(req));
+        snprintf(req.ifr_name, sizeof(req.ifr_name), "%s", out[i].name);
+        if (ioctl(fd, SIOCGIWMODE, &req) == 0 && req.u.mode == IW_MODE_MASTER)
+            out[i].hosted = 1;
         char ssid[WIFI_SSID_MAX]; memset(ssid, 0, sizeof(ssid));
         memset(&req, 0, sizeof(req));
         snprintf(req.ifr_name, sizeof(req.ifr_name), "%s", out[i].name);
@@ -134,7 +141,7 @@ int wifi_scan_adapters(struct wifi_adapter *out, int maximum)
             ssid[n] = 0;
             if (n && strcmp(ssid, "off/any")) {
                 memcpy(out[i].ssid, ssid, n + 1);
-                out[i].connected = 1;
+                out[i].connected = !out[i].hosted;
             }
         }
     }
@@ -189,5 +196,51 @@ int wifi_parse_nmcli_networks(const char *text, struct wifi_network *out, int ma
         snprintf(network->device, sizeof(network->device), "%s", device);
     }
     free(copy);
+    return count;
+}
+
+int wifi_merge_adapter_activity(struct wifi_network *networks, int count, int maximum,
+                                const struct wifi_adapter *adapters, int adapter_count)
+{
+    if (!networks || count < 0 || maximum <= 0) return count;
+    if (count > maximum) count = maximum;
+    /* nmcli's IN-USE flag does not describe every local/AP mode. Merge the
+     * native state by both device and SSID so duplicate names on two cards
+     * never collapse into one row. */
+    for (int a = 0; adapters && a < adapter_count; a++) {
+        const struct wifi_adapter *adapter = &adapters[a];
+        if ((!adapter->connected && !adapter->hosted) || !adapter->ssid[0]) continue;
+        int found = 0;
+        for (int i = 0; i < count; i++) {
+            if (strcmp(networks[i].device, adapter->name) ||
+                strcmp(networks[i].ssid, adapter->ssid)) continue;
+            networks[i].in_use = 1;
+            if (adapter->hosted) networks[i].hosted = 1;
+            found = 1;
+        }
+        if (!found && count < maximum) {
+            struct wifi_network *network = &networks[count++];
+            memset(network, 0, sizeof(*network));
+            snprintf(network->ssid, sizeof(network->ssid), "%s", adapter->ssid);
+            snprintf(network->device, sizeof(network->device), "%s", adapter->name);
+            snprintf(network->security, sizeof(network->security), "%s",
+                     adapter->hosted ? "hosted hotspot" : "connected locally");
+            network->signal = -1;
+            network->in_use = 1;
+            network->hosted = adapter->hosted;
+        }
+    }
+    /* Stable partition: connected/hosted rows first without resorting the
+     * remaining scan by a different SSID or card order. */
+    for (int i = 1; i < count; i++) {
+        if (!networks[i].in_use) continue;
+        int j = i;
+        while (j > 0 && !networks[j - 1].in_use) {
+            struct wifi_network tmp = networks[j];
+            networks[j] = networks[j - 1];
+            networks[j - 1] = tmp;
+            j--;
+        }
+    }
     return count;
 }

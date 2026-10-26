@@ -1,6 +1,6 @@
 #!/usr/bin/make -f
 # Debian package build for scoswm. The upstream Makefile is plain
-# make + libX11/zlib, so debhelper's makefile buildsystem drives it
+# make + libX11/libXext/zlib, so debhelper's makefile buildsystem drives it
 # directly; only the install prefix needs pinning to /usr (the
 # buildsystem would otherwise pass a lowercase prefix= that this
 # Makefile does not use).

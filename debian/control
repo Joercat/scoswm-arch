@@ -5,6 +5,7 @@ Maintainer: Joe <167563398+Joercat@users.noreply.github.com>
 Rules-Requires-Root: no
 Build-Depends: debhelper-compat (= 13),
  libx11-dev,
+ libxext-dev,
  zlib1g-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/Joercat/scoswm-arch

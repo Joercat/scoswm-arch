@@ -2,7 +2,7 @@
 # Build a quick .deb for testing on Debian, without needing debhelper.
 # (For a proper source-package build use debian/ + dpkg-buildpackage.)
 #
-#   sudo apt install build-essential libx11-dev zlib1g-dev
+#   sudo apt install build-essential libx11-dev libxext-dev zlib1g-dev
 #   ./packaging/build-deb.sh
 #   sudo apt install ./scoswm_<version>_<arch>.deb
 #
@@ -33,7 +33,7 @@ mkdir -p "$stage/DEBIAN"
 if [ -f debian/control ] && command -v dpkg-shlibdeps >/dev/null 2>&1; then
     shlibs=$(dpkg-shlibdeps -O "$stage/usr/bin/scoswm" "$stage/usr/bin/scos-terminal" "$stage/usr/bin/scos-files" | sed 's/^shlibs:Depends=//')
 else
-    shlibs="libc6, libx11-6, zlib1g"
+    shlibs="libc6, libx11-6, libxext6, zlib1g"
 fi
 installed_size=$(du -sk "$stage/usr" | cut -f1)
 

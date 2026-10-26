@@ -19,13 +19,13 @@ it could only run SCos's built-in apps.
 |---|---|
 | `theme.c` four palettes | Copied verbatim into `src/util.c` (`scos_themes[]`), unit-tested; config can also define a custom palette field-by-field |
 | `wm.c` 26 px titlebar, 18 px min/max/close, accent when focused, `color_blend` when not | Same geometry and colours in `src/scoswm.c: draw_frame()`; buttons act on the real client window (ICCCM `WM_DELETE_WINDOW`, EWMH state for maximise/minimise) |
-| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()` plus a lightweight Wi-Fi button; only permanent pins occupy the main bar, while the picker lists real running windows with their icons and is the animation target for minimise/restore |
+| Taskbar: launcher grid button, "Windows N" picker, pins, power button, clock | Same layout in `draw_bar()` plus a compact numeric date and lightweight Wi-Fi button; only permanent pins occupy the main bar. Left-click lists real running windows; right-click opens an on-demand MRU visual overview with captured tiles, title/icon fallbacks and a clean outer margin |
 | Launcher grid + `user/apps` | Launcher panel over the taskbar indexing freedesktop `.desktop` files, type-to-search — the Linux-native equivalent |
 | Desktop icons 88×96 snap grid, selection, context menus | Same grid on the root window; default icons are Terminal, Files, SysMon and Settings; right-click menu opens only those core apps, the launcher, or WM controls |
-| Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff |
+| Power menu | Real Linux actions: locker if installed, WM restart (clients reparented first, so nothing closes), `systemctl` suspend/reboot/poweroff. Every disruptive action has a Cancel-default confirmation; Lock remains immediate |
 | Settings app | Built-in lightweight panel: live theme/taskbar changes, Terminal/Files/Pins editing, saved to `~/.config/scoswm/scoswm.conf` |
 | SCos core apps | Only Terminal, Files, SysMon and Settings are retained. Terminal is the standalone `scos-terminal` Xlib/PTY application running real Bash; Files is the standalone original-style `scos-files` X11/POSIX application (with an explicit external-command override); SysMon is a built-in `/proc` + `/sys` panel with NVIDIA/nouveau detection; Settings is a built-in live config panel. Games and other non-normal-use SCos apps are intentionally absent. |
-| No original network stack | Native per-adapter wireless status plus optional asynchronous `nmcli` scan/connect. Rows retain interface names and simultaneous active connections; no network daemon is embedded. |
+| No original network stack | Native per-adapter wireless status plus optional asynchronous `nmcli` scan/connect. Rows retain interface names and simultaneous active connections; hosted AP mode is detected separately from client connections and active rows sort first. No network daemon is embedded. |
 
 ## Protocol coverage
 
@@ -42,7 +42,10 @@ EWMH: `_NET_SUPPORTED`, `_NET_CLIENT_LIST`, `_NET_ACTIVE_WINDOW`,
 `_NET_WM_STATE` (maximized/fullscreen/hidden), window types
 (dock/desktop/notification left unmanaged; ordinary and utility windows
 are reachable from the Windows picker). Root supports RandR-driven resize
-via its ConfigureNotify.
+via its ConfigureNotify. The six-pixel right desktop rule uses a small
+WM-owned override-redirect surface above ordinary frames, with an empty
+X SHAPE input region so it cannot intercept application clicks. If SHAPE is
+unavailable, the overlay stays unmapped and the wallpaper fallback remains.
 
 Cursor consistency uses the bundled SCos Xcursor theme, explicit session
 `XCURSOR_THEME`/`XCURSOR_SIZE`, root `RESOURCE_MANAGER` entries for Qt, and
@@ -64,20 +67,19 @@ ISO10646 font when available for its Unicode cell grid.
   real Xlib client is framed, focused and listed.
 - `tests/run_graphical.sh`: uses a pure-JavaScript X11 server to drive
   the real Xlib WM and terminal without Xvfb. Set `SCOSWM_NODE_X11` to a
-  `sidorares/node-x11` checkout containing `lib/xserver`. The saved
-  regression covers buffered drawing, desktop/taskbar geometry including
-  both right-border columns, power and high-contrast selection colours,
-  close hover, taskbar stacking, the pinned-only bar, picker activation and
-  resize-free minimise/restore, 20 window-reuse cycles, all four built-in
-  image sets, Qt/GTK cursor publication and inheritance, pointer-driven
-  terminal resize/move, changed-row Bash/arrow repainting and long-tab Close
-  clipping, real standalone Files navigation/create/rename, delayed fake-
-  `nmcli` multi-device interaction, real-client desktop/taskbar double-click
-  multi-instance launching and single-click most-recent-window activation,
-  and mouse-opened Settings with live persisted taskbar scaling. The right
-  rule also has a dedicated WM-owned
-  override-redirect surface; headless geometry is not presented as proof of
-  physical-display visibility.
+  `sidorares/node-x11` checkout containing `lib/xserver`. Coverage includes
+  buffered drawing, compact date/Wi-Fi geometry, all five power-action
+  confirmation cancellations, high-contrast selection states, taskbar
+  stacking, and the right rule both above a covering application and
+  click-through via its empty SHAPE input region. Three real clients check
+  the MRU visual overview, tile activation and dismissal. Retained checks
+  cover the pinned-only bar, resize-free minimise/restore, 20 window-reuse
+  cycles, built-in images, Qt/GTK cursor publication, terminal repaint and
+  long-title Close behavior, standalone Files navigation/create/rename,
+  delayed fake-`nmcli` active-first multi-device interaction, shortcut
+  multi-instance/MRU activation, drag/drop and mouse-opened Settings.
+  Headless geometry is not presented as proof of physical-display
+  visibility, real wireless/power behavior, or physical input latency.
 - Earlier development runs also verified adoption, maximise/restore,
   Alt+Tab, desktop-icon and launcher launching, and config-file theming;
   `docs/scoswm.png` was captured from such a run.

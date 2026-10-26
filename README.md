@@ -6,7 +6,7 @@
 your ordinary Linux applications — terminals, browsers, editors, games —
 while looking and behaving like the [SCos](https://github.com/Joercat/SCos)
 desktop: the bottom taskbar with its 2×2-grid launcher, "Windows N"
-picker, pinned shortcuts, power button and clock; desktop icons with
+picker, pinned shortcuts, power button, numeric date and clock; desktop icons with
 real freedesktop app images on a snap grid over a gradient+grid
 wallpaper; 26 px titlebars with
 minimise/maximise/close buttons; and the four SCos themes
@@ -27,7 +27,9 @@ PTY. Files is the included original-style `scos-files` application, which
 browses and manages real POSIX directories without requiring a separately
 installed system file manager. Both programs also run standalone in KDE.
 The taskbar's Wi-Fi panel preserves multiple adapters and simultaneous
-connections. SysMon and Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
+client connections, lists connected networks first, and reports hosted
+hotspots separately rather than counting them as joined networks.
+SysMon and Settings are tiny built-in panels. SysMon reads only `/proc` and `/sys`
 (including NVIDIA proprietary vs nouveau detection) and only samples
 while open. Settings changes the theme,
 taskbar height, program choices, independent taskbar/desktop shortcuts,
@@ -48,9 +50,10 @@ normal config file.
 - **Wayland programs still work** through XWayland, which every major
   toolkit supports.
 
-The hard shared-library runtime dependencies are `libX11` and zlib (the
-latter is used to decode standard PNG app icons) — on Debian those are
-the `libx11-6`/`zlib1g` packages, pulled in automatically by the `.deb`.
+The hard shared-library runtime dependencies are `libX11`, `libXext`
+(used for the click-through SHAPE input region on the desktop rule) and
+zlib (used to decode standard PNG app icons) — on Debian those are the
+`libx11-6`/`libxext6`/`zlib1g` packages, pulled in automatically by the `.deb`.
 SVG icon support is optional through the recommended gdk-pixbuf/librsvg
 packages. The terminal uses the system's PTY support and Bash; no Konsole,
 VTE, or other terminal-emulation library is embedded or required.
@@ -60,7 +63,7 @@ VTE, or other terminal-emulation library is embedded or required.
 Debian 12/13 (and derivatives) — build a quick test package:
 
 ```sh
-sudo apt install build-essential libx11-dev zlib1g-dev
+sudo apt install build-essential libx11-dev libxext-dev zlib1g-dev
 ./packaging/build-deb.sh
 sudo apt install ./scoswm_*.deb
 ```
@@ -68,7 +71,7 @@ sudo apt install ./scoswm_*.deb
 or build the proper Debian source package in `debian/`:
 
 ```sh
-sudo apt install debhelper libx11-dev zlib1g-dev
+sudo apt install debhelper libx11-dev libxext-dev zlib1g-dev
 dpkg-buildpackage -us -uc -b
 sudo apt install ../scoswm_*.deb
 ```
@@ -135,17 +138,18 @@ startx
 | Add/move/remove apps | Right-click an app in the launcher, a taskbar pin, or a desktop icon for **Launch**, surface-specific **Add**/**Move**, and **Remove** actions. Taskbar `pins` and `desktop_pins` are independent; removing one surface's shortcut does not remove the other |
 | Arrange shortcuts | Drag a desktop icon to snap it to the nearest grid slot. Drag taskbar icons to reorder them, or drag in either direction between the desktop and taskbar to move a shortcut. The snap outline/insertion marker previews the drop and the layout is saved |
 | Select desktop icons | Click an icon, or click-hold-drag empty desktop to paint a rubber-band selection rectangle. Right-click empty desktop for the normal desktop menu |
-| Window list | "Windows N" taskbar button. Running windows appear only here, with their real icons; the main taskbar keeps only your pinned shortcuts |
+| Window list | Left-click **Windows N**. Running windows appear only in this picker and the visual overview, with their real icons; the main taskbar keeps only your pinned shortcuts |
+| Visual window overview | Right-click **Windows N** to show every open window as an on-demand captured tile (title/icon fallback when capture is unavailable). The most recently active window is largest at upper left, with a clean icon-free outer margin. Click a tile to focus it; right-click or press `Esc` to close |
 | Move / resize | Drag the titlebar / any window edge or corner, or `Alt+drag` / `Alt+right-drag` anywhere. Dragging a maximised titlebar restores the window under the pointer |
 | Minimise / maximise / close | Titlebar buttons, double-click titlebar to maximise, or right-click the titlebar for a menu. Restore minimised windows from **Windows N**; minimise/restore transitions target that picker and never resize the real application |
 | Cycle windows | `Alt+Tab` / `Alt+Shift+Tab`, or use the mouse wheel over the desktop, taskbar or a titlebar |
 | Terminal | `Super+Enter` |
 | SysMon / Settings | `Super+M` / `Super+,`, or their desktop/taskbar icons |
-| Wi-Fi | Click the taskbar antenna to see per-card status, scan, choose a per-device network row, enter a password and connect; `F5` rescans and the wheel scrolls network rows |
+| Wi-Fi | Click the taskbar antenna to see separate joined-network/hosted-hotspot counts and per-card status, scan, choose an active-first per-device network row, enter a password and connect; `F5` rescans and the wheel scrolls network rows |
 | Close focused window | `Alt+F4` or `Super+Q` |
 | Minimise / maximise focused | `Alt+F9` / `Alt+F10` |
 | Desktop menu | Right-click the desktop |
-| Power menu | Taskbar power button: lock, restart/exit the WM, suspend, reboot, power off (via `systemctl`) |
+| Power menu | Taskbar power button: lock immediately; restart/exit the WM, suspend, reboot and power off (via `systemctl`) require confirmation. Cancel is the safe keyboard default |
 
 Terminal, Files, SysMon and Settings use their bundled `scos-terminal`,
 `scos-files`, `scos-sysmon` and `scos-settings` images directly; they do
@@ -253,9 +257,11 @@ all detected wireless adapters and their current SSIDs independently.
 When NetworkManager's `nmcli` is installed, Scan and Connect run in a
 nonblocking child process. Each result retains its interface name, so two
 cards connected to the same SSID remain two rows and simultaneous active
-connections are not collapsed into one global network. Select a row to
-choose its card; Enter/Connect uses that row's `ifname` and the password
-field for secured networks.
+connections are not collapsed into one global network. Connected rows sort
+first. A hosted AP is labelled **H / hosted hotspot**, counted separately
+from joined networks, and cannot accidentally be used as a Connect target.
+Select a row to choose its card; Enter/Connect uses that row's `ifname`
+and the password field for secured networks.
 
 ## Browser titlebars and window controls
 
@@ -318,31 +324,37 @@ runs unit tests for the pure logic (SCos theme values, config and
 `.desktop` parsing, Exec field-code stripping, UTF-8 titles), terminal
 emulation checks, a real interactive-Bash PTY integration test, real
 temporary-directory Files operations, and multi-adapter/escaped-nmcli
-Wi-Fi parsers — all without needing an X server. When Xvfb is available, it also boots the
-WM, manages a real Xlib client
-(`tests/testclient.c`) and verifies adoption through the window tree
-(`tests/xprobe.c`). Without any X server the integration step reports
-SKIP. `tests/run_graphical.sh` additionally runs headless graphical
-regressions when a `node-x11` checkout with `lib/xserver` is available:
-set `SCOSWM_NODE_X11=/path/to/node-x11`. It checks desktop geometry, the
-dedicated right-rule surface and fallback columns, 28 px taskbar bounds,
-the upward power-symbol opening, high-contrast launcher/menu/Settings selections, close hover, dock
-stacking, the pinned-only taskbar, picker-based resize-free
-minimise/restore, 20 rapid window-withdrawal/reuse cycles, real images for
-all four built-ins, Qt/GTK cursor settings and cursor inheritance, buffered
-terminal resize/move behavior, changed-row Bash/arrow repainting and
-long-title Close clipping, plus mouse-opened Settings with live persisted
-28/32 px taskbar scaling. Standalone Files is driven through real directory
-navigation, creation and rename. A delayed fake `nmcli` checks nonblocking
-Wi-Fi scans, scrolling and per-interface connect arguments. It also exercises persistent desktop snapping,
-bidirectional shortcut drag/drop and previews, independent context-menu
-add/remove actions, visible rubber-band selection, 24/32/48 px icons and
-grid toggling. Real-client shortcut checks cover double-click multi-instance
-launching on both surfaces and single-click activation of the most recently
-active matching window without spawning another process. Crash-path
-regressions include 12 external Files launches
-with live multi-size client-icon changes and 600 wheel events through 250
-installed apps with separate PNG cache entries.
+Wi-Fi parsing/merging. Wi-Fi cases include simultaneous client rows,
+hosted-hotspot synthesis and stable active-first ordering. These tests do
+not need an X server. When Xvfb is available, the suite also boots the WM,
+manages a real Xlib client (`tests/testclient.c`) and verifies adoption
+through the window tree (`tests/xprobe.c`); otherwise that step reports
+SKIP.
+
+`tests/run_graphical.sh` runs additional headless graphical regressions
+when a `node-x11` checkout with `lib/xserver` is available (set
+`SCOSWM_NODE_X11=/path/to/node-x11`). It checks the compact two-row date,
+Wi-Fi arc/dot geometry, 28 px taskbar bounds, power glyph and confirmation
+cancellation, high-contrast selections, close hover and dock stacking.
+The six-pixel right rule is checked above a covering real application and
+its empty SHAPE input region is checked by clicking a Files Close control
+beneath those visible pixels. Three real clients exercise the MRU visual
+overview, tile activation, clean outer margin and right-click dismissal.
+
+Existing coverage retains the pinned-only taskbar, resize-free
+minimise/restore, 20 rapid window-withdrawal/reuse cycles, all built-in
+images, Qt/GTK cursor publication and inheritance, buffered terminal
+resize/move, changed-row Bash/arrow repainting, long-title Close clipping,
+and mouse-opened Settings with live persisted scaling. Standalone Files is
+driven through real navigation, creation and rename. A delayed fake
+`nmcli` checks nonblocking scans, active-first rows, scrolling and
+per-interface connect arguments. Shortcut tests cover persistent snapping,
+bidirectional drag/drop, rubber-band selection, double-click multi-instance
+launching and single-click most-recent-window activation. Crash-path
+regressions include 12 external Files launches with live multi-size icons
+and 600 wheel events through 250 installed apps. Headless success is not a
+claim of physical-display visibility, real wireless/power behavior, or
+physical input latency; those still require retesting on the target PC.
 
 `PORTING.md` documents how each piece of the SCos desktop maps onto
 this WM and where real-application behaviour necessarily differs.

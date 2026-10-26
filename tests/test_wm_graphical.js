@@ -31,6 +31,37 @@ function property(server, win, name) {
 
 (async () => {
     const server = createServer({ width: 800, height: 600 });
+    // Minimal SHAPE input-region support for the real libXext calls used by
+    // the paint-only right rule. Rendering remains ordinary core X11.
+    server.registerExtension('SHAPE', {
+        handleRequest(xserver, client, minor, body) {
+            if (minor === 0) { // QueryVersion
+                const reply = client.startReply(0, 0);
+                reply.writeUInt16LE(1, 8);
+                reply.writeUInt16LE(1, 10);
+                client.send(reply);
+            } else if (minor === 1 && body.length >= 12) { // Rectangles
+                const op = body.readUInt8(0), destinationKind = body.readUInt8(1);
+                const win = xserver.resources.get(body.readUInt32LE(4));
+                if (win && destinationKind === 2 && op === 0)
+                    win.inputShapeEmpty = body.length === 12; // ShapeSet + empty rectangle list
+            }
+        }
+    });
+    const unshapedPointerWindow = server.pointerWindow;
+    server.pointerWindow = function () {
+        const hidden = [];
+        try {
+            for (;;) {
+                const hit = unshapedPointerWindow.call(this);
+                if (!hit || !hit.inputShapeEmpty) return hit;
+                hit.mapped = false;
+                hidden.push(hit);
+            }
+        } finally {
+            for (const win of hidden) win.mapped = true;
+        }
+    };
     const directDraws = [];
     const handlerErrors = [];
     const configureLog = [];
@@ -78,8 +109,8 @@ function property(server, win, name) {
 if [ "$1" = "-t" ]; then
     : > "$NMCLI_LOG.started"
     sleep 2
-    printf '%s\\n' '*:HomeNet:82:WPA2:wlp1s0' '*:HomeNet:71:WPA2:wlp2s0' \\
-        ':Coffee:55:--:wlp1s0' ':Lab:60:WPA2:wlp2s0' ':Five:50:--:wlp1s0' \\
+    printf '%s\\n' ':Coffee:99:--:wlp1s0' '*:HomeNet:82:WPA2:wlp1s0' '*:HomeNet:71:WPA2:wlp2s0' \\
+        ':Guest:55:--:wlp1s0' ':Lab:60:WPA2:wlp2s0' ':Five:50:--:wlp1s0' \\
         ':Six:49:--:wlp2s0' ':Seven:48:--:wlp1s0' ':Eight:47:--:wlp2s0'
     : > "$NMCLI_LOG.finished"
 elif [ "$1" = "device" ]; then
@@ -114,8 +145,9 @@ fi
             property(server, w, 'WM_NAME') === 'SCosWM desktop right rule' && w.mapped), 'dedicated right-rule window');
         assert.equal(edgeRule.x, 783);
         assert.equal(edgeRule.y, 0);
-        assert.equal(edgeRule.width, 4);
+        assert.equal(edgeRule.width, 6);
         assert.equal(edgeRule.height, 572);
+        assert.equal(edgeRule.inputShapeEmpty, true, 'right rule must not intercept application input');
         const main = 0x39ff14;
         const resources = property(server, server.root, 'RESOURCE_MANAGER') || '';
         assert.match(resources, /Xcursor\.theme:\s*SCos/, 'Qt/X resource cursor theme');
@@ -182,7 +214,7 @@ fi
                 for (let x = x0; x < x0 + w; x++) if (pixel(x, y) === color) count++;
             return count;
         };
-        const controlRanges = [[8, 42], [48, 158], [168, 323], [610, 644], [650, 684]];
+        const controlRanges = [[8, 42], [48, 158], [168, 323], [594, 628], [634, 668]];
         for (const [x0, x1] of controlRanges) {
             for (let y = 22; y < 28; y++) {
                 for (let x = x0; x < x1; x++)
@@ -198,10 +230,20 @@ fi
                 `built-in taskbar icon ${i} fell back to a glyph`);
         }
 
-        // At 28px the power circle is centred at (667,15), radius 6.
-        // Its right-hand side must be drawn: a right-side gap was the old,
-        // incorrectly rotated symbol; the gap is now upward around the stem.
-        assert.equal(barPixel(673, 15), main, 'power symbol does not open upward');
+        // The numeric month/day and year occupy separate rows between power
+        // and the clock, including at the minimum 28px taskbar height.
+        assert.ok(countColorPixels(barPixel, 676, 3, 48, 10, main) > 20,
+            'numeric month/day row missing');
+        assert.ok(countColorPixels(barPixel, 676, 15, 48, 10, main) > 20,
+            'numeric year row missing');
+        const wifiDotColor = barPixel(611, 18);
+        assert.notEqual(wifiDotColor, barPixel(624, 18), 'Wi-Fi dot missing below arcs');
+        assert.equal(barPixel(611, 6), wifiDotColor, 'Wi-Fi outer arc is not centred above the dot');
+        assert.ok(countColorPixels(barPixel, 600, 7, 22, 8, wifiDotColor) > 0,
+            'Wi-Fi arcs are not drawn above the dot');
+        // At 28px the power circle is centred at (651,15), radius 6.
+        // Its right-hand side must be drawn and its opening remains upward.
+        assert.equal(barPixel(657, 15), main, 'power symbol does not open upward');
 
         // Every taskbar hover/launch state follows the same readable
         // bright-accent + dark-foreground rule as menus and Settings.
@@ -216,9 +258,9 @@ fi
         await waitFor(() => barPixel(199, 7) === main, 'pin hover accent');
         assert.ok(countColorPixels(barPixel, 179, 8, 12, 12, 0x1a1a1a) > 8,
             'pin image disappeared on hover');
-        server.injectPointerMove(667, 586);
-        await waitFor(() => barPixel(682, 7) === main, 'Power hover accent');
-        assert.ok(countColorPixels(barPixel, 656, 8, 22, 16, 0x001500) > 0,
+        server.injectPointerMove(651, 586);
+        await waitFor(() => barPixel(666, 7) === main, 'Power hover accent');
+        assert.ok(countColorPixels(barPixel, 640, 8, 22, 16, 0x001500) > 0,
             'Power hover glyph contrast');
 
         // Launcher selection is a bright accent row with dark text, never
@@ -263,8 +305,14 @@ fi
         let frame = clientWin.parent;
         assert.equal(clientWin.width, 400);
         assert.equal(clientWin.height, 300);
-        assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(bar), 'frame must stack below taskbar');
-        assert.equal(server.root.children[server.root.children.indexOf(bar) - 1], frame, 'active frame should be immediately below dock');
+        assert.ok(server.root.children.indexOf(frame) < server.root.children.indexOf(edgeRule),
+            'frame must stack below the right rule');
+        assert.ok(server.root.children.indexOf(edgeRule) < server.root.children.indexOf(bar),
+            'right rule must stack below the taskbar');
+        assert.equal(server.root.children[server.root.children.indexOf(bar) - 1], edgeRule,
+            'right rule should be immediately below dock');
+        assert.equal(server.root.children[server.root.children.indexOf(edgeRule) - 1], frame,
+            'active frame should be immediately below right rule');
 
         // Focused close hover must contrast with the focused green titlebar.
         const bx = frame.width - 22;
@@ -283,11 +331,11 @@ fi
         // may appear in the empty area between the pins and power control.
         assert.equal(barPixel(168, 6), main, 'running app replaced a pinned shortcut');
         for (let y = 6; y < 22; y++) {
-            for (let x = 328; x < 600; x++)
+            for (let x = 328; x < 594; x++)
                 assert.notEqual(barPixel(x, y), main, `running-window taskbar box at ${x},${y}`);
         }
-        assert.equal(barPixel(610, 6), main, 'Wi-Fi button border before unchanged power control');
-        assert.equal(barPixel(650, 6), main, 'power control retained its original coordinate');
+        assert.equal(barPixel(594, 6), main, 'Wi-Fi button border before power control');
+        assert.equal(barPixel(634, 6), main, 'power control sits beside the Wi-Fi button');
 
         // Minimise from the titlebar, then restore through the Windows picker.
         // The real client must retain 400x300 throughout both animations.
@@ -549,6 +597,18 @@ fi
         server.injectButton(1, false);
         await waitFor(() => !settings.mapped, 'Settings close');
 
+        // Cover the rule with a real managed application. The dedicated rule
+        // must still be painted above that frame, not merely above wallpaper.
+        X.ResizeWindow(wid, 800, 500);
+        await waitFor(() => clientWin.width === 800 && clientWin.height === 500,
+            'covering application resize');
+        await waitFor(() => {
+            server.compose();
+            return rootPixel(783, 100) === main && rootPixel(784, 100) === main;
+        }, 'right rule visible above covering application');
+        assert.ok(server.root.children.indexOf(edgeRule) > server.root.children.indexOf(frame),
+            'right rule stacked below covering application');
+
         // Clear the real clients so every desktop gesture below reaches the
         // root window, just as it would on an empty physical desktop.
         X.DestroyWindow(wid);
@@ -573,6 +633,26 @@ fi
             server.injectButton(1, false);
             await delay(40);
         };
+
+        // Every disruptive power-menu action requires a separate confirmation.
+        // Cancel is the default: Return and Escape must never execute it.
+        for (let action = 1; action <= 5; action++) {
+            server.injectPointerMove(651, 586);
+            server.injectButton(1, true);
+            const powerMenu = await waitFor(() => server.root.children.find(w =>
+                w.width === 190 && w.height === 150 && w.mapped), `power menu action ${action}`);
+            server.injectButton(1, false);
+            await delay(40);
+            click(powerMenu.absX() + 60, powerMenu.absY() + 3 + action * 24 + 12);
+            await waitFor(() => powerMenu.mapped && powerMenu.width === 380 && powerMenu.height === 126,
+                `confirmation for power action ${action}`);
+            assert.equal(wm.exitCode, null, `power action ${action} ran before confirmation`);
+            if (action === 1) await key(36); // Return activates safe default Cancel
+            else if (action === 2) await key(9); // Escape
+            else click(powerMenu.absX() + 50, powerMenu.absY() + 100); // Cancel
+            await waitFor(() => !powerMenu.mapped, `cancel confirmation for power action ${action}`);
+            assert.equal(wm.exitCode, null, `cancelled power action ${action} still ran`);
+        }
 
         // Click-hold-drag on empty wallpaper paints an actual rubber band,
         // and releasing it leaves a selection only for intersected icons.
@@ -770,19 +850,23 @@ fi
         await waitFor(() => fs.existsSync(path.join(home, 'bin/renamed')) && !fs.existsSync(createdFolder),
             'Files context rename changed the real directory');
         const filesFrame = filesWin.parent;
-        click(filesFrame.absX() + filesFrame.width - 13, filesFrame.absY() + 10);
+        const filesCloseX = filesFrame.absX() + filesFrame.width - 13;
+        const filesCloseY = filesFrame.absY() + 10;
+        server.injectPointerMove(filesCloseX, filesCloseY);
+        assert.equal(server.pointerWindow(), filesFrame, 'right rule intercepted Files Close input');
+        click(filesCloseX, filesCloseY);
         await waitFor(() => filesApp.exitCode !== null || filesApp.signalCode !== null,
             'standalone Files WM_DELETE close');
 
         // The delayed fake nmcli proves the WM remains event-driven during a
         // scan, then verifies per-device rows, scrolling and ifname connect.
-        click(627, 586);
+        click(611, 586);
         const wifiPanel = await waitFor(() => server.root.children.find(w => w.width === 540 && w.height === 390 && w.mapped),
             'Wi-Fi panel');
         await waitFor(() => fs.existsSync(`${nmcliLog}.started`), 'asynchronous nmcli scan started');
         assert.equal(fs.existsSync(`${nmcliLog}.finished`), false);
-        server.injectPointerMove(667, 586);
-        await waitFor(() => stressBarPixel(682, 7) === main, 'taskbar hover during delayed Wi-Fi scan', 800);
+        server.injectPointerMove(651, 586);
+        await waitFor(() => stressBarPixel(666, 7) === main, 'taskbar hover during delayed Wi-Fi scan', 800);
         assert.equal(fs.existsSync(`${nmcliLog}.finished`), false, 'WM blocked until nmcli finished');
         await waitFor(() => fs.existsSync(`${nmcliLog}.finished`), 'fake Wi-Fi scan results');
         await delay(150);
@@ -792,6 +876,13 @@ fi
         await waitFor(() => rasterSignature(wifiPanel) !== unscrolledWifi, 'Wi-Fi network wheel scrolling');
         click(wifiPanel.absX() + 150, wifiPanel.absY() + 200, 4);
         await waitFor(() => rasterSignature(wifiPanel) === unscrolledWifi, 'Wi-Fi network scroll restoration');
+        click(wifiPanel.absX() + 30, wifiPanel.absY() + 168); // active HomeNet must sort before stronger inactive Coffee
+        await waitFor(() => wifiPixel(10, 156) === main, 'connected network was not sorted first');
+        click(wifiPanel.absX() + 382, wifiPanel.absY() + 333);
+        await waitFor(() => fs.existsSync(nmcliLog), 'first active Wi-Fi row connect arguments');
+        assert.deepEqual(fs.readFileSync(nmcliLog, 'utf8').trim().split('\n'),
+            ['device', 'wifi', 'connect', 'HomeNet', 'ifname', 'wlp1s0']);
+        fs.rmSync(nmcliLog);
         click(wifiPanel.absX() + 30, wifiPanel.absY() + 192); // second row: HomeNet on wlp2s0
         await waitFor(() => wifiPixel(10, 182) === main, 'second-interface Wi-Fi row selected');
         click(wifiPanel.absX() + 382, wifiPanel.absY() + 333); // Connect
@@ -846,6 +937,40 @@ fi
         const oldest = instances[0], middle = instances[1], newest = instances[2];
         await waitFor(() => activeWindow() === newest.id, 'new taskbar instance focused');
 
+        // Right-clicking Windows shows the real clients in an MRU overview.
+        // The newest window occupies the large upper-left tile; two other
+        // clients surround it on the right. The 32px outer margin is clean.
+        const openOverview = async () => {
+            click(100, 586, 3);
+            return waitFor(() => server.root.children.find(w =>
+                property(server, w, 'WM_NAME') === 'SCosWM window overview' && w.mapped),
+                'right-click visual window overview');
+        };
+        let overview = await openOverview();
+        assert.equal(overview.width, 800);
+        assert.equal(overview.height, 600);
+        const overviewPixel = (x, y) => overview.raster.data[y * overview.width + x] & 0xffffff;
+        await waitFor(() => overviewPixel(32, 80) === main, 'largest upper-left overview tile');
+        assert.equal(overviewPixel(481, 80), main, 'second overview tile');
+        assert.equal(overviewPixel(481, 324), main, 'third overview tile');
+        server.compose();
+        assert.equal(rootPixel(10, 10), overviewPixel(10, 10), 'overview does not cover clean outer margin');
+        assert.notEqual(rootPixel(10, 10), main, 'desktop grid/icon painted in overview margin');
+        click(550, 150); // second MRU tile: middle instance
+        await waitFor(() => !overview.mapped && activeWindow() === middle.id,
+            'overview tile activates its real window');
+        assert.equal(multiClients().length, 3, 'overview activation closed or spawned a client');
+
+        overview = await openOverview();
+        click(550, 150); // after activating middle, this tile is now newest
+        await waitFor(() => !overview.mapped && activeWindow() === newest.id,
+            'overview tiles did not refresh to MRU order');
+        overview = await openOverview();
+        click(400, 300, 3);
+        await waitFor(() => !overview.mapped, 'right-click closes visual overview');
+        assert.equal(activeWindow(), newest.id, 'closing overview changed active window');
+        assert.equal(multiClients().length, 3, 'right-click overview close affected a client');
+
         // Minimise newest to oldest. Each minimisation focuses the next
         // visible instance, so once all three are minimised the oldest is the
         // most recently active matching window. Each single-click surface
@@ -871,7 +996,8 @@ fi
 
         assert.deepEqual(directDraws, [], `visible-window drawing bypassed backing pixmaps: ${JSON.stringify(directDraws)}`);
         assert.deepEqual(handlerErrors, [], `X server handler errors: ${handlerErrors.map(x => String(x.err)).join(', ')}`);
-        console.log('graphical WM: dedicated right-rule surface/fallback columns, centered labels, 28px taskbar bounds and upward power gap OK');
+        console.log('graphical WM: visible click-through right rule, compact date/Wi-Fi geometry, 28px bounds and power glyph OK');
+        console.log('graphical power: five disruptive actions require confirmation; mouse/Return/Escape cancellation OK');
         console.log('graphical WM: high-contrast launcher/menu/taskbar/Settings states, close hover and dock stacking OK');
         console.log('graphical icons: dedicated Terminal/Files/SysMon/Settings desktop, pin and picker images OK');
         console.log('graphical cursor: preserved Qt resources, GTK XSETTINGS and themed inheritance OK');
@@ -885,8 +1011,9 @@ fi
         console.log('graphical launcher: 250 apps, separate PNG cache entries and 600 wheel events OK');
         console.log('graphical terminal: real Bash/arrows use incremental rows; long-title Close remains visible/clickable OK');
         console.log('graphical standalone Files: real navigation, New Folder, rename and KDE-class application lifetime OK');
-        console.log('graphical Wi-Fi: nonblocking scan, scrolling and second-ifname connect arguments OK');
+        console.log('graphical Wi-Fi: nonblocking scan, active-first rows, scrolling and per-ifname connect arguments OK');
         console.log('graphical shortcuts: desktop/taskbar double-click multi-instance and single-click last-window activation OK');
+        console.log('graphical overview: three real MRU tiles, clean margin, activation and right-click dismissal OK');
         console.log('graphical drawing: all monitored WM/terminal painting used backing pixmaps');
     } catch (err) {
         console.error('WM log on failure:', wmLog);

@@ -1,3 +1,26 @@
+scoswm (0.5.7) unstable; urgency=medium
+
+  * Rework the right desktop rule as a buffered six-pixel surface stacked
+    above ordinary application frames, with an empty X SHAPE input region so
+    its pixels cannot intercept Close buttons or application content. Retain
+    wallpaper fallback columns and leave the overlay unmapped without SHAPE.
+  * Center the Wi-Fi arcs above their dot, add a compact numeric month/day and
+    year between power and clock, and keep Wi-Fi/power controls adjacent.
+    Distinguish hosted hotspots from joined client networks, preserve
+    simultaneous per-card connections and sort active network rows first.
+  * Add a right-click Windows overview with MRU tiles, on-demand X11 captures,
+    title/icon fallbacks, a large upper-left recent window, clean outer
+    spacing, click/keyboard activation and safe stale-window handling.
+  * Require Cancel-default confirmation for WM restart/exit, suspend, reboot
+    and power off from both power and desktop menus; Lock remains immediate.
+  * Add unit/graphical coverage for hotspot merging, active-first ordering,
+    bar geometry, power cancellation, click-through rule input and real-client
+    overview behavior; retain prior Files, Bash/PTY, shortcut, scrolling and
+    crash regressions. Physical display/wireless behavior still needs target-
+    system retesting.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 22:49:09 -0400
+
 scoswm (0.5.6) unstable; urgency=medium
 
   * Split shortcut activation into focus-or-launch and always-launch-new

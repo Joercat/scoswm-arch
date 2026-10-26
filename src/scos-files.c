@@ -22,7 +22,7 @@
 #include <unistd.h>
 
 #ifndef VERSION
-#define VERSION "0.5.6"
+#define VERSION "0.5.7"
 #endif
 #define TB_Y 8
 #define TB_H 26

@@ -38,6 +38,32 @@ int main(void)
     CHECK(!strcmp(networks[2].ssid, "Coffee \\ Guest"));
     CHECK(!strcmp(networks[2].security, "--") && networks[2].signal == 55);
 
+    memset(adapters, 0, sizeof(adapters));
+    snprintf(adapters[0].name, sizeof(adapters[0].name), "wlp2s0");
+    snprintf(adapters[0].ssid, sizeof(adapters[0].ssid), "Cafe Hotspot");
+    adapters[0].hosted = 1;
+    snprintf(adapters[1].name, sizeof(adapters[1].name), "wlp1s0");
+    snprintf(adapters[1].ssid, sizeof(adapters[1].ssid), "Home:Net");
+    adapters[1].connected = 1;
+    count = wifi_merge_adapter_activity(networks, count, 8, adapters, 2);
+    CHECK(count == 4);
+    CHECK(networks[0].in_use && networks[1].in_use && networks[2].in_use);
+    CHECK(!networks[3].in_use && !strcmp(networks[3].ssid, "Coffee \\ Guest"));
+    CHECK(networks[2].hosted && !strcmp(networks[2].ssid, "Cafe Hotspot"));
+    CHECK(!strcmp(networks[2].device, "wlp2s0") && networks[2].signal == -1);
+    CHECK(!networks[0].hosted && !strcmp(networks[0].device, "wlp1s0"));
+
+    const char *inactive_first =
+        ":Coffee:55:--:wlp1s0\n"
+        "*:Home:82:WPA2:wlp1s0\n"
+        ":Lab:60:WPA2:wlp2s0\n";
+    count = wifi_parse_nmcli_networks(inactive_first, networks, 8);
+    count = wifi_merge_adapter_activity(networks, count, 8, NULL, 0);
+    CHECK(count == 3);
+    CHECK(networks[0].in_use && !strcmp(networks[0].ssid, "Home"));
+    CHECK(!networks[1].in_use && !strcmp(networks[1].ssid, "Coffee"));
+    CHECK(!networks[2].in_use && !strcmp(networks[2].ssid, "Lab"));
+
     if (failures) printf("test_wifi: %d failures\n", failures);
     else printf("test_wifi: all checks passed\n");
     return failures ? 1 : 0;

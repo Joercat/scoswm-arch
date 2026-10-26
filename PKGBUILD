@@ -1,12 +1,12 @@
 # Maintainer: scoswm contributors
 pkgname=scoswm
-pkgver=0.5.6
+pkgver=0.5.7
 pkgrel=1
 pkgdesc="SCos-styled lightweight X11 window manager for real Linux applications"
 arch=('x86_64' 'aarch64')
 url="https://github.com/Joercat/scoswm-arch"
 license=('MIT')
-depends=('libx11' 'zlib' 'bash' 'xorg-fonts-misc')
+depends=('libx11' 'libxext' 'zlib' 'bash' 'xorg-fonts-misc')
 makedepends=('gcc' 'make')
 optdepends=('xorg-server: X server (Xorg or XWayland host)'
             'slock: screen locker for the power menu'
