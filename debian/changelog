@@ -1,0 +1,292 @@
+scoswm (0.5.10) unstable; urgency=medium
+
+  * Move the right desktop rule to a one-pixel physical-edge surface with a
+    matching wallpaper fallback, retaining buffered above-frame rendering
+    and its empty SHAPE input region for click-through application controls.
+  * Negotiate Composite 0.2 before redirection/named-pixmap capture, retain
+    direct X11 preview capture, and report capture fallback failures once.
+    Make overview title strips persistently high contrast, add application
+    icons, verify real client pixels, and add a short eased opening move.
+  * Add asynchronous wpctl/pactl/amixer level queries after volume actions
+    and a transient click-through OSD with numeric percentage, mute state,
+    level bar and restrained animation. Volume command overrides remain.
+  * Reduce Terminal stalls with bounded PTY reads, queued nonblocking input,
+    a pre-poll X flush, and a local ASCII path that bypasses XIM filtering
+    outside dead-key/compose/non-ASCII sequences. Preserve genuine Bash,
+    readline, incremental row rendering and standalone terminal behavior.
+  * Expand unit/graphical coverage for volume parsers/OSD, physical-edge
+    geometry, real overview content/title/icon/animation, echo repaint
+    arrival and a delayed-reader 128 KiB queued paste. Headless success does
+    not prove physical previews, animation,
+    audio levels, border placement or Terminal latency; retest on target.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 00:29:24 -0400
+
+scoswm (0.5.9) unstable; urgency=medium
+
+  * Correct the on-demand Composite loader to libXcomposite.so.1 and the
+    Debian runtime dependency to libxcomposite1. The 0.5.8 package
+    incorrectly named the nonexistent libxcomposite6 dependency, which
+    prevented installation even though the WM has a direct-capture fallback.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 23:52:41 -0400
+
+scoswm (0.5.8) unstable; urgency=medium
+
+  * Reduce the visible right desktop rule to two pixels while retaining its
+    buffered above-frame rendering and empty SHAPE input region, so it stays
+    click-through over maximized application controls. Render the compact
+    date with the shared core font and move the Wi-Fi dot down slightly.
+  * Add readable hover/highlight states to Settings fields, themes and
+    controls, Wi-Fi rows/password/Connect/Scan, panel Close buttons, and
+    retain existing menu/taskbar/frame hover behavior.
+  * Merge duplicate nonempty-SSID scan rows only on the same interface,
+    retaining active state, strongest signal and useful security. Preserve
+    distinct adapters, hidden SSIDs and simultaneous client/hosted-hotspot
+    state.
+  * Paint the real gradient/grid wallpaper in the visual overview, capture
+    obscured/32-bit clients through short-lived on-demand libXcomposite
+    redirection when available, convert pixel channel masks correctly, and
+    draw all green tile edges after preview content. Keep the taskbar above
+    the overview; taskbar actions and application activation close it before
+    proceeding, and the Windows right-click toggles it closed.
+  * Handle standard XF86 mute/volume/playback/brightness keys plus
+    Super+F1/F2/F3 volume fallbacks. Add configurable command overrides and
+    wpctl/pactl/amixer, playerctl and brightnessctl/light auto-detection.
+  * Expand unit/graphical regressions for these behaviors and retain prior
+    Files, Bash/PTY, shortcut, power, scrolling and crash coverage. Headless
+    validation does not prove physical preview, display, audio or wireless
+    behavior; target-system retesting remains necessary.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 23:40:21 -0400
+
+scoswm (0.5.7) unstable; urgency=medium
+
+  * Rework the right desktop rule as a buffered six-pixel surface stacked
+    above ordinary application frames, with an empty X SHAPE input region so
+    its pixels cannot intercept Close buttons or application content. Retain
+    wallpaper fallback columns and leave the overlay unmapped without SHAPE.
+  * Center the Wi-Fi arcs above their dot, add a compact numeric month/day and
+    year between power and clock, and keep Wi-Fi/power controls adjacent.
+    Distinguish hosted hotspots from joined client networks, preserve
+    simultaneous per-card connections and sort active network rows first.
+  * Add a right-click Windows overview with MRU tiles, on-demand X11 captures,
+    title/icon fallbacks, a large upper-left recent window, clean outer
+    spacing, click/keyboard activation and safe stale-window handling.
+  * Require Cancel-default confirmation for WM restart/exit, suspend, reboot
+    and power off from both power and desktop menus; Lock remains immediate.
+  * Add unit/graphical coverage for hotspot merging, active-first ordering,
+    bar geometry, power cancellation, click-through rule input and real-client
+    overview behavior; retain prior Files, Bash/PTY, shortcut, scrolling and
+    crash regressions. Physical display/wireless behavior still needs target-
+    system retesting.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 22:49:09 -0400
+
+scoswm (0.5.6) unstable; urgency=medium
+
+  * Split shortcut activation into focus-or-launch and always-launch-new
+    paths. Double-clicking a desktop or taskbar shortcut now starts another
+    real application instance even when one is running; a single click
+    activates the most recently active matching window without spawning.
+  * Preserve no-motion drag/drop handling, delayed single-launch behavior for
+    unopened taskbar pins, desktop selection and surface-independent context
+    menus. Receive root button releases so fast desktop clicks cannot leave
+    a shortcut stuck in its drag state.
+  * Remove all reported normal-build format-truncation diagnostics in Wi-Fi
+    status/adapter rows and standalone Files titles/status messages, plus
+    optimization-dependent SysMon and interface-name sites, with bounded
+    display formatting rather than warning suppression.
+  * Add real-X11-client regressions for desktop/taskbar multi-instance
+    launching and most-recent-window restore, while retaining all previous
+    scrolling, Files, terminal, withdrawal/reuse and Wi-Fi checks.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 21:47:35 -0400
+
+scoswm (0.5.5) unstable; urgency=medium
+
+  * Bundle the original-style scos-files X11/POSIX file manager and make it
+    the default Files action, with real navigation, folder creation,
+    non-overwriting rename, desktop opening, a KDE desktop entry and icons.
+    Retain explicit external-manager overrides and their launch regressions.
+  * Repaint only changed terminal rows during Bash/readline echo and arrow
+    movement, preserve full Expose/resize fallbacks, and ellipsize long tab
+    titles before the visible, clickable Close control.
+  * Add a dedicated override-redirect right-rule surface instead of relying
+    only on root wallpaper pixels, retaining the existing inset and fallback.
+  * Add a lightweight taskbar Wi-Fi panel with native per-adapter status,
+    simultaneous-connection rows, scrolling, nonblocking nmcli scan/connect,
+    and explicit per-interface connection arguments. NetworkManager remains
+    optional for Arch and Debian and no network daemon is added to SCosWM.
+  * Add real-directory, multi-adapter parser, standalone Files UI, incremental
+    terminal, long-title Close, dedicated-rule and delayed fake-nmcli tests;
+    preserve all prior scrolling, crash, withdrawal and drag/drop checks.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 21:21:21 -0400
+
+scoswm (0.5.4) unstable; urgency=medium
+
+  * Make taskbar and desktop shortcuts independent, with one-time legacy
+    migration and preservation of an explicitly empty desktop list. Add
+    per-app Launch/Add/Move/Remove menus on launcher, taskbar and desktop.
+  * Add persistent nearest-grid desktop dragging, taskbar reordering,
+    bidirectional cross-surface drag/drop, snap/insertion previews and a
+    visible click-hold rubber-band desktop selection rectangle.
+  * Add live Settings controls for independent shortcut lists, 24/32/48 px
+    desktop icons and wallpaper-grid visibility. Move the two-pixel right
+    desktop rule 16 px inside the physical edge and align the border rect.
+  * Harden malformed PNG handling, multi-size _NET_WM_ICON parsing and
+    optional gdk-pixbuf loader lifetime. Add targeted external Files-launch
+    and 250-app/600-wheel scrolling regressions without assuming headless
+    success proves the originally reported physical crashes are resolved.
+  * Declare the Arch core-font runtime dependency and expand normal and
+    ASan/UBSan graphical, configuration and malformed-image test coverage.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 02:05:00 -0400
+
+scoswm (0.5.3) unstable; urgency=medium
+
+  * Bundle four dedicated SCos application icon sets (Terminal, Files,
+    SysMon and Settings) at 16–256 px and use those names everywhere the
+    built-ins appear, including desktop pins and the Windows picker.
+  * Add a deterministic, dependency-free artwork generator and a complete
+    SCos Xcursor theme with common cursor aliases. Select it explicitly in
+    the session and publish matching X resources and GTK XSETTINGS from the
+    WM, covering Qt/GTK application interiors without another daemon.
+  * Make the right desktop rule two pixels wide so an inner column remains
+    visible even if the physical display clips its final column.
+  * Replace green-on-green selection states with bright accent backgrounds
+    and dark text across the launcher, menus, Settings and taskbar hover /
+    launch states. Highlight the active Settings text field consistently.
+  * Retain the pins-only taskbar and client-preserving withdrawal behavior;
+    expand graphical checks for all built-in images, cursor settings,
+    high-contrast selections, both right-edge columns and 20 reuse cycles.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 01:05:00 -0400
+
+scoswm (0.5.2) unstable; urgency=medium
+
+  * Keep only permanent pinned shortcuts on the main taskbar. Running
+    windows now appear exclusively in the Windows picker, with their real
+    application icons and stable row targets; animations target the picker.
+  * Preserve client windows across ordinary unmap/withdrawal by reparenting
+    them to the root before destroying only the WM frame. This fixes the
+    destructive rapid unmap/reuse path found in close/reopen stress testing.
+  * Keep launcher application names readable on their highlighted rows and
+    rotate the power symbol so its circular opening faces upward.
+  * Keep taskbar menus and built-in Settings/SysMon panels open after the
+    opening click's release. Add graphical coverage for picker-only operation,
+    20 window-reuse cycles and live persisted 28/32 px taskbar scaling.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sun, 25 Oct 2026 00:40:00 -0400
+
+scoswm (0.5.1) unstable; urgency=medium
+
+  * Double-buffer taskbar, frame, launcher, menu, SysMon and Settings
+    painting; reuse the desktop backing pixmap on expose and avoid
+    erase-before-redraw flashes during terminal and frame resizing.
+  * Keep ordinary application frames below the taskbar, make taskbar
+    activation respond on a single press, scale and centre all bar
+    controls, and add a contrasting close-button hover state.
+  * Animate minimise/restore with a separate placeholder without resizing
+    the real application; avoid duplicate client geometry requests when
+    moving windows. Terminal resize keeps a complete backing image.
+  * Inherit the session cursor in SCos Terminal, centre desktop labels,
+    and draw explicit right/bottom desktop border lines.
+  * Install dedicated SCos Terminal hicolor icons and a KDE window-class
+    mapping; support SVG application icons through the optional desktop
+    gdk-pixbuf/librsvg loader in addition to built-in PNG/XPM decoding.
+  * Add repeatable headless graphical regressions for painting, layout,
+    stacking, cursor inheritance, icons and resize-free animations.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 23:45:00 -0400
+
+scoswm (0.5.0) unstable; urgency=medium
+
+  * Add scos-terminal, a standalone SCos-styled Xlib terminal with tabs,
+    scrollback, UTF-8, colors, fullscreen application support, selection
+    and clipboard integration. It runs a real interactive Bash on a PTY,
+    not a simulated command parser.
+  * Install a freedesktop application entry so SCos Terminal can be
+    launched independently from KDE and other desktops.
+  * Prefer scos-terminal for the WM's Terminal action while preserving
+    explicitly configured terminal commands and external fallbacks.
+  * Request system titlebars for Firefox and ordinary GTK applications
+    in the SCosWM session, without overriding explicit environment
+    settings; document Chromium's own system-titlebar preference.
+  * Add terminal parser, resize/scrollback and real-Bash PTY tests.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 16:00:00 -0400
+
+scoswm (0.4.4) unstable; urgency=medium
+
+  * Fix the desktop wallpaper pixmap: the gradient and grid were still
+    painted onto the root window and then covered by the pixmap copy,
+    which hid the grid lines and kept the desktop flickering.
+  * Make the mouse wheel work on WM surfaces: it scrolls the launcher
+    list (previously the offset snapped back to the selection) and
+    cycles windows on the desktop and taskbar.
+  * Add hover highlighting on desktop icons, taskbar items and window
+    title buttons, pressed/starting feedback on taskbar pins, and
+    clear a desktop icon's selection as soon as empty desktop is
+    clicked.
+  * Define the themed arrow cursor on the root window, WM chrome and
+    window frames so the pointer no longer changes style between
+    applications and the desktop.
+  * Reachable resize zones on every window edge and corner (from the
+    client area too, not just the 1 px frame), and dragging a
+    maximised window's titlebar restores it under the pointer.
+  * Short minimise/restore transitions so windows no longer appear
+    and vanish instantaneously.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 -0400
+
+scoswm (0.4.3) unstable; urgency=medium
+
+  * Fix leaked drag state: a button release now ends any drag wherever
+    it lands. Releasing over another window or the taskbar previously
+    left windows glued to the pointer, suppressed desktop repaints and
+    left ghost frames of closed windows on the desktop.
+  * Paint the wallpaper into a root background pixmap so the X server
+    restores the desktop instantly when windows close/move (no more
+    split-second flicker or leftover window outlines).
+  * Discover apps in all XDG data dirs plus Flatpak and Snap export
+    directories, and add an "All installed apps..." browse mode to
+    the launcher (Esc returns to the core view).
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 21:00:00 -0400
+
+scoswm (0.4.2) unstable; urgency=medium
+
+  * Log session starts, WM messages and exit status to
+    ~/.cache/scoswm/session.log in scoswm-session, so a failed SDDM
+    login leaves a readable reason instead of a silent flash.
+  * Silence -Wformat-truncation build warnings (bounded copies) so
+    real build errors are visible; the warnings were harmless.
+  * More X core font fallbacks and a clear log line if the X server
+    connection is lost mid-session.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 -0400
+
+scoswm (0.4.1) unstable; urgency=medium
+
+  * Add Debian packaging (debian/) and a quick packaging/build-deb.sh
+    so the window manager builds and installs natively on Debian.
+  * Harden the SDDM/X11 session entry: TryExec now names the
+    scoswm-session entry point, so SDDM only lists SCosWM when the
+    session launcher is actually installed and executable.
+  * Detect Debian's x-terminal-emulator alternative (and pcmanfm-qt /
+    caja / mate-terminal) when choosing the default terminal and file
+    manager.
+  * Session launcher exports sensible XDG session variables for
+    startx/xinit use; under SDDM these are already provided.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 -0400
+
+scoswm (0.4.0) unstable; urgency=medium
+
+  * Real freedesktop icons for desktop/taskbar/launcher, launcher
+    right-click pinning of installed apps to the Home screen, and
+    taskbar layout fixes.
+
+ -- Joe <167563398+Joercat@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 -0400

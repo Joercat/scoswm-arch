@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SCos Terminal
+GenericName=Terminal
+Comment=Run Bash and Linux command-line applications in the SCos terminal
+Exec=scos-terminal
+TryExec=scos-terminal
+Icon=scos-terminal
+Terminal=false
+StartupWMClass=SCosTerminal
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;bash;console;command;line;

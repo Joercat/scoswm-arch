@@ -1,0 +1,11 @@
+/scoswm
+/scos-terminal
+/scos-files
+/test_util
+/test_terminal
+/test_pty
+/test_files
+/test_wifi
+/test_file_client
+/*.deb
+__pycache__/

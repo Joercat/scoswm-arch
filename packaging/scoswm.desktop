@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=SCosWM
+GenericName=Window Manager
+Comment=SCos-styled lightweight X11 window manager
+Exec=scoswm-session
+TryExec=scoswm-session
+Type=Application
+DesktopNames=SCosWM;
+Keywords=window;manager;lightweight;

@@ -1,0 +1,59 @@
+# scoswm configuration — copy to ~/.config/scoswm/scoswm.conf
+# (or $XDG_CONFIG_HOME/scoswm/scoswm.conf). Lines are key = value.
+
+# One of: matrix-1 (Matrix), blue-sky (Blue Sky), midnight-purple
+# (Purple), amber-tech (Matrix red). These are the four SCos themes.
+theme = matrix-1
+
+# Or build a custom palette (hex RRGGBB). Setting any colour switches
+# the theme to "custom"; fields you omit inherit the Matrix values.
+# main       = #39FF14
+# bg_top     = #031403
+# bg_bot     = #000800
+# win_bg     = #1a1a1a
+# text       = #39FF14
+# title_text = #001500
+# taskbar_bg = #141414
+
+# Programs. Empty values prefer the bundled scos-terminal (real Bash/PTY)
+# and scos-files (real POSIX directories). Set an explicit command to use
+# another terminal or file manager; scoswm does not require a system one.
+# Examples: terminal = alacritty
+#           terminal = xterm -fa fixed
+#           files = thunar
+terminal =
+files =
+
+# X core font for WM decorations and the terminal. With this empty the
+# terminal prefers an ISO10646 (Unicode) fixed font from xfonts-base.
+# font = -misc-fixed-medium-r-normal--14-130-75-75-c-70-iso10646-1
+
+# Independent taskbar and desktop shortcuts. Use the retained SCos core
+# names (terminal, files, sysmon, settings), .desktop ids/app names, or a
+# bare command. Right-click any launcher item or existing shortcut for
+# Add/Move/Remove actions; drag between surfaces to move and reorder.
+pins = terminal, files, sysmon, settings
+desktop_pins = terminal, files, sysmon, settings
+
+# Grid slots are parallel to desktop_pins and are maintained automatically
+# when you drag icons. At 800x600, slots 0..7 are the first row.
+desktop_slots = 0,1,2,3
+
+# Desktop presentation: 24, 32 or 48 px icon images; wallpaper grid on/off.
+desktop_icon_size = 24
+desktop_grid = 1
+
+# Taskbar height (SCos used 40).
+bar_height = 40
+
+# Hardware/media-key actions. Empty values auto-detect wpctl/pactl/amixer,
+# playerctl, and brightnessctl/light respectively. Set explicit shell
+# commands to integrate another audio/player/brightness stack.
+volume_mute_cmd =
+volume_down_cmd =
+volume_up_cmd =
+media_play_pause_cmd =
+media_next_cmd =
+media_previous_cmd =
+brightness_up_cmd =
+brightness_down_cmd =
